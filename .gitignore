@@ -2,3 +2,5 @@
 [Bb][Uu][Ii][Ll][Dd]
 Makefile
 objs
+
+compile_commands.json
