@@ -15,26 +15,63 @@ static void *ngx_palloc_block(ngx_pool_t *pool, size_t size);
 static void *ngx_palloc_large(ngx_pool_t *pool, size_t size);
 
 
+/**
+ *
+ * @param size 创建内存池会预分配个内存块 size=内存池头+预分配的内存块大小
+ * @param log
+ * @return
+ */
 ngx_pool_t *
 ngx_create_pool(size_t size, ngx_log_t *log)
 {
     ngx_pool_t  *p;
 
+    /*
+     * 申请内存 对齐边界是16Byte 申请好的内存用途是
+     * <ul>
+     *   <li>组织内存池头 管理整个内存池</li>
+     *   <li>抠掉内存池头 剩下空间作为首个内存块</li>
+     * </ul>
+     */
     p = ngx_memalign(NGX_POOL_ALIGNMENT, size, log);
     if (p == NULL) {
         return NULL;
     }
-
+    // 内存池的头部已经被使用了 可以使用的部分在头部后面 抠掉头部剩下的空间作为一个内存块 最为链表节点挂到内存池的分配链上
+    // 内存块的可分配空间[last...end)
     p->d.last = (u_char *) p + sizeof(ngx_pool_t);
     p->d.end = (u_char *) p + size;
+    // 创建内存池时只分配了一个内存块 因此分配链上就一个链表节点
     p->d.next = NULL;
+    // 初始化内存块分配失败次数 初始值0
     p->d.failed = 0;
 
+    /*
+     * 首个内存块大小作为每次向内存池申请的空间大小阈值
+     * <ul>
+     *   <li>系统调用alloc系列的限制跟内核有关 默认4KB</li>
+     *   <li>内存池可以突破这个限制</li>
+     *   <li>以此为分水岭 大于这个的是大内存块 小于这个的是小内存块
+     *     <ul>
+     *       <li>小内存块开辟是</li>
+     *       <li></li>
+     *     </ul>
+     *   </li>
+     * </ul>
+     */
     size = size - sizeof(ngx_pool_t);
+    /*
+     * 内存池每次向请求分配空间大小限制
+     * 以后申请的内存大小<ul>
+     *   <li>1 小内存从小内存块分配 没有可用内存了再分配新的小内存块</li>
+     *   <li>2 大内存直接分配大内存块</li>
+     * </ul>
+     */
     p->max = (size < NGX_MAX_ALLOC_FROM_POOL) ? size : NGX_MAX_ALLOC_FROM_POOL;
-
+    // 内存池当前使用的小内存块
     p->current = p;
     p->chain = NULL;
+    // 初始化内存当时不分配大内存块 懒加载 需要的时候再分配
     p->large = NULL;
     p->cleanup = NULL;
     p->log = log;
@@ -119,15 +156,28 @@ ngx_reset_pool(ngx_pool_t *pool)
 }
 
 
+/**
+ * 从内存池申请内存 内存对齐
+ * @param pool 内存池
+ * @param size 要申请的空间
+ * @return 分配的内存地址
+ */
 void *
 ngx_palloc(ngx_pool_t *pool, size_t size)
 {
 #if !(NGX_DEBUG_PALLOC)
+    /*
+     * 分配小内存
+     * <ul>
+     *   <li></li>
+     *   <li></li>
+     * </ul>
+     */
     if (size <= pool->max) {
         return ngx_palloc_small(pool, size, 1);
     }
 #endif
-
+    // 大块内存
     return ngx_palloc_large(pool, size);
 }
 
@@ -145,35 +195,71 @@ ngx_pnalloc(ngx_pool_t *pool, size_t size)
 }
 
 
+/**
+ * 内存池分配小内存
+ * <ul>
+ *   <li>1 遍历分配链上的内存块 看看内存块上可分配内存够不够用 遍历的内存块不是整个分配链 而是current之后的内存块</li>
+ *   <li>2 没有可用内存块就新分配内存块</li>
+ * </ul>
+ * @param pool 内存池
+ * @param size 分配的内存空间
+ * @param align 标识是不是需要内存对齐 0-不需要对齐
+ * @return 分配的内存地址
+ */
 static ngx_inline void *
 ngx_palloc_small(ngx_pool_t *pool, size_t size, ngx_uint_t align)
 {
     u_char      *m;
+    /*
+     * 得益于ngx_pool_s的内存布局 最前面放置的是ngx_pool_data_t
+     * 因此这个地方p实际是ngx_pool_data_t类型 用来遍历内存池的内存块
+     */
     ngx_pool_t  *p;
-
+    // 内存池正在使用的内存块
     p = pool->current;
 
+    /*
+     * 从内存池正在使用的内存块开始遍历内存池的内存块
+     * 找到了够分配内存的内存块就在内存块上分配
+     */
     do {
+        // 内存块可分配的内存空间起始地址
         m = p->d.last;
 
+        // 控制内存对齐
         if (align) {
+            // 保证内存块中可分配内存的内存对齐
             m = ngx_align_ptr(m, NGX_ALIGNMENT);
         }
-
+        // 内存块上可分配空间足够需求 在当前内存块上分配内存
         if ((size_t) (p->d.end - m) >= size) {
+            // 在内存块上分配size的空间 调整内存块可分配大小[last...end)
             p->d.last = m + size;
 
             return m;
         }
-
         p = p->d.next;
 
     } while (p);
-
+    /*
+     * 执行到这两种情况
+     * <ul>
+     *   <li>1 数据块都没有可分配内存了 也就是所有数据块都分配完了</li>
+     *   <li>2 数据块有碎片 数据块虽然有可分配内存 但是不满足需求大小</li>
+     * </ul>
+     * 那就要在内存池中分配个新的内存块 小内存块
+     */
     return ngx_palloc_block(pool, size);
 }
 
 
+/**
+ * 分配内存块
+ * 因为内存池分配内存时发现内存不足 这时要给内存池新加内存块
+ * @param pool 内存池
+ * @param size 向内存池申请的内存大小
+ * @return 内存池分配的内存地址
+ */
 static void *
 ngx_palloc_block(ngx_pool_t *pool, size_t size)
 {
@@ -181,35 +267,68 @@ ngx_palloc_block(ngx_pool_t *pool, size_t size)
     size_t       psize;
     ngx_pool_t  *p, *new;
 
+    // 内存块大小 计算一个内存块是多大 准备新建个内存块挂到内存池的分配链上
     psize = (size_t) (pool->d.end - (u_char *) pool);
-
+    // 向操作系统申请内存用作内存块
     m = ngx_memalign(NGX_POOL_ALIGNMENT, psize, pool->log);
     if (m == NULL) {
         return NULL;
     }
 
+    // 新的内存块
     new = (ngx_pool_t *) m;
-
+    // 初始化内存块的可分配信息 [last...end)是可分配的
     new->d.end = m + psize;
     new->d.next = NULL;
+    // 初始化内存块的分配失败次数 初始化0
     new->d.failed = 0;
-
+    // 抠掉内存块的头占用的大小
     m += sizeof(ngx_pool_data_t);
+    // 确保内存对齐
     m = ngx_align_ptr(m, NGX_ALIGNMENT);
+    // 要从内存池里面抠掉size空间
     new->d.last = m + size;
 
+    /**
+     * 从内存池正在使用的内存块开始遍历分配链上的内存块
+     * 现在的流程是在分配内存块 能触发分配内存块 肯定是从内存池分配内存时发现内存池分配链[current...)上内存块都不可用
+     * 也就意味着分配链上[current....)内存块都发生了一次分配失败
+     */
     for (p = pool->current; p->d.next; p = p->d.next) {
+        /*
+         * 内存块分配内存失败无非就两种情况
+         * <ul>
+         *   <li>内存块真的不剩下空间了</li>
+         *   <li>内存块剩了点空间 几乎不足以大部分场景需求了</li>
+         * </ul>
+         * 内存块分配失败次数超过4 就判定为内存块分配满了 没有可用空间了 即使真的存在浪费可能性也无所谓了 典型用空间换时间 避免链表轮询的性能消耗
+         * 这个地方滑动current也比较巧妙
+         * 本质是当前current的分配失败次数超限 滑动current到下一个内存块
+         * 但是更新失败次数面向的内存块是[current...) 可能后面内存块分配次数也超限了 也就是新的current也不合格
+         * 因此直接在更新计数的过程中考察每一个内存块 次数超限就后移current
+         */
         if (p->d.failed++ > 4) {
             pool->current = p->d.next;
         }
     }
 
+    // 上面for循环结束后p指向的就是内存池分配链上最后一个内存块 链表尾插
     p->d.next = new;
 
     return m;
 }
 
 
+/**
+ * 申请内存池大块内存
+ * <ul>
+ *   <li>1 在池外申请好内存</li>
+ *   <li>2 用内存池管理大块内存</li>
+ * </ul>
+ * @param pool 内存池实例
+ * @param size 要申请的内存空间
+ * @return 申请到的内存地址
+ */
 static void *
 ngx_palloc_large(ngx_pool_t *pool, size_t size)
 {
@@ -217,6 +336,7 @@ ngx_palloc_large(ngx_pool_t *pool, size_t size)
     ngx_uint_t         n;
     ngx_pool_large_t  *large;
 
+    // 向系统申请内存
     p = ngx_alloc(size, pool->log);
     if (p == NULL) {
         return NULL;
@@ -229,18 +349,24 @@ ngx_palloc_large(ngx_pool_t *pool, size_t size)
             large->alloc = p;
             return p;
         }
-
+        // 小细节 如果链表过长 找4个还没挂载上去 就头插一个
         if (n++ > 3) {
             break;
         }
     }
-
+    /*
+     * 执行到这无非两种情况
+     * <ul>
+     *   <li>1 大块内存链表节点都名花有主 要新增节点</li>
+     *   <li>2 链表过长 为了执行效率没有尾插 采用头插</li>
+     * </ul>
+     */
     large = ngx_palloc_small(pool, sizeof(ngx_pool_large_t), 1);
     if (large == NULL) {
         ngx_free(p);
         return NULL;
     }
-
+    // 链表头插
     large->alloc = p;
     large->next = pool->large;
     pool->large = large;
