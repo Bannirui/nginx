@@ -117,12 +117,18 @@ ngx_destroy_pool(ngx_pool_t *pool)
 
 #endif
 
+    /*
+     * 遍历大内存块链表 释放大内存块上指向的内存
+     * 为什么只回收了大内存块中实际存放数据的内存 而不管大内存块头部结构
+     * 因为大内存块的头部当初就是开辟在小内存块上的 只要下面把所有小内存块都释放掉就自然而然释放了所有有内存块内存
+     */
     for (l = pool->large; l; l = l->next) {
         if (l->alloc) {
             ngx_free(l->alloc);
         }
     }
 
+    // 遍历分配链上小内存块 释放小内存块
     for (p = pool, n = pool->d.next; /* void */; p = n, n = n->d.next) {
         ngx_free(p);
 
@@ -132,24 +138,54 @@ ngx_destroy_pool(ngx_pool_t *pool)
     }
 }
 
-
+/**
+ * 内存池重置
+ * <ul>
+ *   <li>小内存块逻辑回收 调整可分配内存状态就行 不用真的释放这部分内存</li>
+ *   <li>大内存块保留头部结构 释放指向的内存</li>
+ * </ul>
+ * @param pool 内存池
+ */
 void
 ngx_reset_pool(ngx_pool_t *pool)
 {
     ngx_pool_t        *p;
     ngx_pool_large_t  *l;
 
+    /*
+     * 遍历大内存块链表 释放大内存块上记录的分配出去的内存
+     * 保留内存块头部结构
+     */
     for (l = pool->large; l; l = l->next) {
         if (l->alloc) {
             ngx_free(l->alloc);
         }
     }
 
+    /*
+     * 遍历分配链上小内存块
+     * 不需要真的释放内存块内存
+     * <ul>
+     *   <li>分配链有现成的内存块结构 再给释放了 回头真用到分配内存时还得消耗性能新建内存块</li>
+     *   <li>内存块里面可分配内存也不需要真的回收 只要重置状态就行 继续重复使用</li>
+     * </ul>
+     */
     for (p = pool; p; p = p->d.next) {
+        /*
+         * 这个地方我猜测是空间换时间 但是没必要
+         * <ul>
+         *   <li>首先内存池结构体大小80byte 内存块结构体32byte 相差不小</li>
+         *   <li>其次遍历链表单独判断链表首节点并不会有很多的性能损耗</li>
+         *   <li>无非就是代码简洁性牺牲了</li>
+         * </ul>
+         * 对nginx提交的issue https://github.com/nginx/nginx/issues/555
+         */
         p->d.last = (u_char *) p + sizeof(ngx_pool_t);
+        // 内存块分配失败计数重置为0
         p->d.failed = 0;
     }
 
+    // 重置内存池的current
     pool->current = pool;
     pool->chain = NULL;
     pool->large = NULL;
@@ -182,6 +218,11 @@ ngx_palloc(ngx_pool_t *pool, size_t size)
 }
 
 
+/**
+ * 从内存池分配内存 不需要内存对齐
+ * @param pool 内存池
+ * @param size 要分配的内存大小
+ */
 void *
 ngx_pnalloc(ngx_pool_t *pool, size_t size)
 {
@@ -198,7 +239,7 @@ ngx_pnalloc(ngx_pool_t *pool, size_t size)
 /**
  * 内存池分配小内存
  * <ul>
- *   <li>1 遍历分配链上的内存块 看看内存块上可分配内存够不够用 遍历的内存块不是整个分配链 而是current之后的内存块</li>
+ *   <li>1 遍历分配链上的内存块 看看内存块上可分配内存够不够用 遍历的内存块不是整个分配链 而是current及之后的内存块</li>
  *   <li>2 没有可用内存块就新分配内存块</li>
  * </ul>
  * @param pool 内存池
@@ -254,7 +295,7 @@ ngx_palloc_small(ngx_pool_t *pool, size_t size, ngx_uint_t align)
 
 
 /**
- * 分配内存块
+ * 分配内存块 小内存块
  * 因为内存池分配内存时发现内存不足 这时要给内存池新加内存块
  * @param pool 内存池
  * @param size 向内存池申请的内存大小
