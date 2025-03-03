@@ -16,10 +16,7 @@ static void *ngx_palloc_large(ngx_pool_t *pool, size_t size);
 
 
 /**
- *
  * @param size 创建内存池会预分配个内存块 size=内存池头+预分配的内存块大小
- * @param log
- * @return
  */
 ngx_pool_t *
 ngx_create_pool(size_t size, ngx_log_t *log)
@@ -80,6 +77,9 @@ ngx_create_pool(size_t size, ngx_log_t *log)
 }
 
 
+/**
+ * 释放内存池
+ */
 void
 ngx_destroy_pool(ngx_pool_t *pool)
 {
@@ -94,28 +94,6 @@ ngx_destroy_pool(ngx_pool_t *pool)
             c->handler(c->data);
         }
     }
-
-#if (NGX_DEBUG)
-
-    /*
-     * we could allocate the pool->log from this pool
-     * so we cannot use this log while free()ing the pool
-     */
-
-    for (l = pool->large; l; l = l->next) {
-        ngx_log_debug1(NGX_LOG_DEBUG_ALLOC, pool->log, 0, "free: %p", l->alloc);
-    }
-
-    for (p = pool, n = pool->d.next; /* void */; p = n, n = n->d.next) {
-        ngx_log_debug2(NGX_LOG_DEBUG_ALLOC, pool->log, 0,
-                       "free: %p, unused: %uz", p, p->d.end - p->d.last);
-
-        if (n == NULL) {
-            break;
-        }
-    }
-
-#endif
 
     /*
      * 遍历大内存块链表 释放大内存块上指向的内存
@@ -194,6 +172,16 @@ ngx_reset_pool(ngx_pool_t *pool)
 
 /**
  * 从内存池申请内存 内存对齐
+ * 根据内存池设定的max阈值看要分配的内存给大内存块管理还是小内存块管理
+ * <ul>
+ *   <li>大内存块直接新建大内存块作为链表节点挂到大内存块链表上</li>
+ *   <li>小内存块的话 先看看内存池分配链上小内存块有没有可分配空间了
+ *     <ul>
+ *       <li>有现成空间就直接使用</li>
+ *       <li>没有空间就从系统开辟空间 实例化新的小内存块作为分配链节点挂到小内存块链表上</li>
+ *     </ul>
+ *   </li>
+ * </ul>
  * @param pool 内存池
  * @param size 要申请的空间
  * @return 分配的内存地址
@@ -204,10 +192,6 @@ ngx_palloc(ngx_pool_t *pool, size_t size)
 #if !(NGX_DEBUG_PALLOC)
     /*
      * 分配小内存
-     * <ul>
-     *   <li></li>
-     *   <li></li>
-     * </ul>
      */
     if (size <= pool->max) {
         return ngx_palloc_small(pool, size, 1);
@@ -240,7 +224,7 @@ ngx_pnalloc(ngx_pool_t *pool, size_t size)
  * 内存池分配小内存
  * <ul>
  *   <li>1 遍历分配链上的内存块 看看内存块上可分配内存够不够用 遍历的内存块不是整个分配链 而是current及之后的内存块</li>
- *   <li>2 没有可用内存块就新分配内存块</li>
+ *   <li>2 没有可用内存块就对内存池进行扩容 增加新的内存块</li>
  * </ul>
  * @param pool 内存池
  * @param size 分配的内存空间
@@ -295,7 +279,7 @@ ngx_palloc_small(ngx_pool_t *pool, size_t size, ngx_uint_t align)
 
 
 /**
- * 分配内存块 小内存块
+ * 内存池扩容内存块 分配内存块 小内存块
  * 因为内存池分配内存时发现内存不足 这时要给内存池新加内存块
  * @param pool 内存池
  * @param size 向内存池申请的内存大小
