@@ -12,12 +12,32 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-
+/**
+ * 数组
+ * <ul>
+ *   <li>模糊了数据类型概念 是通用数组 不关心数据类型</li>
+ *   <li>动态数组 支持扩容
+ *     <ul>
+ *       <li>数组分配在内存池第一个内存块 内存块还有可分配空间支持1个1个元素方式扩容</li>
+ *       <li>2倍的扩容机制</li>
+ *     </ul>
+ *   </li>
+ * </ul>
+ */
 typedef struct {
+    /**
+     * 指向数组中首元素地址
+     */
     void        *elts;
+    /**
+     * 数组元素计数(0-based)
+     */
     ngx_uint_t   nelts;
+    // 数组每个元素大小(byte)
     size_t       size;
+    // 数组容量 可以存放多少个元素
     ngx_uint_t   nalloc;
+    // 数组内存分配使用的内存池
     ngx_pool_t  *pool;
 } ngx_array_t;
 
@@ -28,6 +48,13 @@ void *ngx_array_push(ngx_array_t *a);
 void *ngx_array_push_n(ngx_array_t *a, ngx_uint_t n);
 
 
+/**
+ * 初始化数组
+ * @param array 数组
+ * @param pool 内存池
+ * @param n 数组容量
+ * @param size 数组每个元素大小
+ */
 static ngx_inline ngx_int_t
 ngx_array_init(ngx_array_t *array, ngx_pool_t *pool, ngx_uint_t n, size_t size)
 {
@@ -35,12 +62,16 @@ ngx_array_init(ngx_array_t *array, ngx_pool_t *pool, ngx_uint_t n, size_t size)
      * set "array->nelts" before "array->elts", otherwise MSVC thinks
      * that "array->nelts" may be used without having been initialized
      */
-
+    // 数组刚初始化 之后放元素到数组肯定从0开始
     array->nelts = 0;
+    // 数组每个元素大小
     array->size = size;
+    // 数组容量
     array->nalloc = n;
+    // 数组用的内存池
     array->pool = pool;
 
+    // 数组首元素地址
     array->elts = ngx_palloc(pool, n * size);
     if (array->elts == NULL) {
         return NGX_ERROR;
