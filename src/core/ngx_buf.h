@@ -17,20 +17,42 @@ typedef void *            ngx_buf_tag_t;
 
 typedef struct ngx_buf_s  ngx_buf_t;
 
+/*
+ * 缓冲区
+ */
 struct ngx_buf_s {
+    /*
+     * 缓冲区当前数据的起始位置
+     */
     u_char          *pos;
+    /*
+     * 缓冲区当前数据的结束位置
+     */
     u_char          *last;
     off_t            file_pos;
     off_t            file_last;
 
+    /*
+     * buf缓冲区起始位置
+     */
     u_char          *start;         /* start of buffer */
+    /*
+     * buf缓冲区结束位置
+     */
     u_char          *end;           /* end of buffer */
     ngx_buf_tag_t    tag;
     ngx_file_t      *file;
     ngx_buf_t       *shadow;
 
 
+    /*
+     * c语言默认整数类型是int
+     * int的前11位
+     */
     /* the buf's content could be changed */
+    /*
+     * 1标识缓冲区数据可以修改
+     */
     unsigned         temporary:1;
 
     /*
@@ -55,15 +77,25 @@ struct ngx_buf_s {
     /* STUB */ int   num;
 };
 
-
+/**
+ * 缓冲区链表节点
+ */
 struct ngx_chain_s {
+    /*
+     * 缓冲区
+     */
     ngx_buf_t    *buf;
+    // 链表的next域
     ngx_chain_t  *next;
 };
 
-
+/*
+ * 用于批量创建缓冲区串成链表
+ */
 typedef struct {
+    // 多少个缓冲区
     ngx_int_t    num;
+    // 每个缓冲区多大 这个是缓冲区真正存放数据的内存空间大小 并不包含缓冲区头占用空间
     size_t       size;
 } ngx_bufs_t;
 
@@ -142,9 +174,17 @@ ngx_chain_t *ngx_create_chain_of_bufs(ngx_pool_t *pool, ngx_bufs_t *bufs);
 
 
 #define ngx_alloc_buf(pool)  ngx_palloc(pool, sizeof(ngx_buf_t))
+/*
+ * 从内存池给缓冲区分配结构内存
+ * clear_alloc初始化为0
+ */
 #define ngx_calloc_buf(pool) ngx_pcalloc(pool, sizeof(ngx_buf_t))
 
 ngx_chain_t *ngx_alloc_chain_link(ngx_pool_t *pool);
+/*
+ * 把缓冲区放到内存池空闲缓冲区链表上
+ * 链表头插法
+ */
 #define ngx_free_chain(pool, cl)                                             \
     (cl)->next = (pool)->chain;                                              \
     (pool)->chain = (cl)

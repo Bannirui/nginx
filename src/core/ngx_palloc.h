@@ -124,6 +124,10 @@ struct ngx_pool_s {
      * </ul>
      */
     ngx_pool_t           *current;
+    /**
+     * 空闲缓冲区链表
+     * 管理空闲的缓冲区 避免缓冲区的重复分配和释放
+     */
     ngx_chain_t          *chain;
     /*
      * 大内存块链表

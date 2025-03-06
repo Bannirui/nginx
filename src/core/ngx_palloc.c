@@ -445,13 +445,22 @@ ngx_pfree(ngx_pool_t *pool, void *p)
 }
 
 
+/*
+ * ngx_pcalloc即nginx_pool_clear_alloc
+ * 同calloc
+ * 在ngx_palloc基础上将内存当分配的内存初始化为0
+ * @param pool 内存池
+ * @param size 内存池分配的内存大小
+ * @return 内存池分配的内存空间起始地址
+ */
 void *
 ngx_pcalloc(ngx_pool_t *pool, size_t size)
 {
     void *p;
-
+    // 内存池分配内存
     p = ngx_palloc(pool, size);
     if (p) {
+        // 分配到的内存初始化为0
         ngx_memzero(p, size);
     }
 
