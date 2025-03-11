@@ -12,16 +12,33 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-
+/*
+ * 键值对
+ */
 typedef struct {
+    // 值
     void             *value;
+    // 键的长度
     u_short           len;
+    /**
+     * 键
+     * 柔性数组 占位用 1个byte
+     * 结构体本身这个成员只占用固定大小 在实际使用的时候分配更多内存来存放变长的name
+     */
     u_char            name[1];
 } ngx_hash_elt_t;
 
-
+/*
+ * 静态hash表
+ * 初始化好了就不扩容了
+ */
 typedef struct {
+    /*
+     * hash桶数组
+     * 所谓hash桶 就是hash表中一个数组 数组中每个元素就是一条键值对链表 存放链表的数组元素空间就是hash桶
+     */
     ngx_hash_elt_t  **buckets;
+    // hash表中hash桶个数 就是数组长度 为了加快计算 规定size是2的幂次方 将来知道了key的hash值就可以位运算定位hash桶=hash&(size-1)
     ngx_uint_t        size;
 } ngx_hash_t;
 
@@ -31,10 +48,13 @@ typedef struct {
     void             *value;
 } ngx_hash_wildcard_t;
 
-
+// 键值对
 typedef struct {
+    // 键
     ngx_str_t         key;
+    // 键的hash值
     ngx_uint_t        key_hash;
+    // 值
     void             *value;
 } ngx_hash_key_t;
 
@@ -52,8 +72,20 @@ typedef struct {
 typedef struct {
     ngx_hash_t       *hash;
     ngx_hash_key_pt   key;
-
+    // hash表最多bucket数量
     ngx_uint_t        max_size;
+    /*
+     * hash桶大小
+     * 这个桶的大小是在实例化时候调用方指定的
+     * 由2个部分组成
+     * <ul>
+     *   <li>指针 这个指针的用处是什么呢<ul>
+     *     <li>指向桶中第一个元素</li>
+     *     <li></li>
+     *   </ul></li>
+     *   <li>真正的键值对数据</li>
+     * </ul>
+     */
     ngx_uint_t        bucket_size;
 
     char             *name;

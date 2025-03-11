@@ -12,9 +12,11 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-
+// 字符串
 typedef struct {
+    // 字符串长度
     size_t      len;
+    // c字符串
     u_char     *data;
 } ngx_str_t;
 

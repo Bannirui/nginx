@@ -8,7 +8,12 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-
+/*
+ * @param hash hash表
+ * @param key
+ * @param name
+ * @param len
+ */
 void *
 ngx_hash_find(ngx_hash_t *hash, ngx_uint_t key, u_char *name, size_t len)
 {
@@ -248,6 +253,11 @@ ngx_hash_find_combined(ngx_hash_combined_t *hash, ngx_uint_t key, u_char *name,
 #define NGX_HASH_ELT_SIZE(name)                                               \
     (sizeof(void *) + ngx_align((name)->key.len + 2, sizeof(void *)))
 
+/*
+ * @param hinit
+ * @param names 键值对列表
+ * @param nelts 有多少个键值对要存到hash表
+ */
 ngx_int_t
 ngx_hash_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names, ngx_uint_t nelts)
 {
@@ -266,13 +276,14 @@ ngx_hash_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names, ngx_uint_t nelts)
     }
 
     if (hinit->bucket_size > 65536 - ngx_cacheline_size) {
+        // hash桶过大会导致将来查询效率低下
         ngx_log_error(NGX_LOG_EMERG, hinit->pool->log, 0,
                       "could not build %s, too large "
                       "%s_bucket_size: %i",
                       hinit->name, hinit->name, hinit->bucket_size);
         return NGX_ERROR;
     }
-
+    // 遍历键值对
     for (n = 0; n < nelts; n++) {
         if (names[n].key.data == NULL) {
             continue;
@@ -287,31 +298,46 @@ ngx_hash_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names, ngx_uint_t nelts)
             return NGX_ERROR;
         }
     }
-
+    /*
+     * test用来记录hash桶填充状态避免冲突 记录的是hash桶中已经存放了多大空间 放置超过桶空间上限
+     * 为啥用系统调用alloc而不用内存池palloc
+     * 因为仅仅是辅助使用 在hash表初始化好就释放了 不需要长期存储
+     * max_size是hash桶数量的上限 实际上不一定用这么多 下面会去计算出真正需要的hash桶数量
+     * 这个辅助数组就按照max_size分配就行 反正这个初始化方法结束完就释放内存了
+     */
     test = ngx_alloc(hinit->max_size * sizeof(u_short), hinit->pool->log);
     if (test == NULL) {
         return NGX_ERROR;
     }
-
+    // 抠除桶里面的指针 剩下来的就是实际可以存放键值对的空间
     bucket_size = hinit->bucket_size - sizeof(void *);
-
+    // 存满nelts个健值对需要多少个桶比较合理
     start = nelts / (bucket_size / (2 * sizeof(void *)));
     start = start ? start : 1;
 
     if (hinit->max_size > 10000 && nelts && hinit->max_size / nelts < 100) {
         start = hinit->max_size - 1000;
     }
-
+    /*
+     * 经过初步计算需要start个hash桶比较合适 从[start....max_size]开始尝试找到真正合适的hash桶数量
+     * 为什么需要尝试
+     * <ul>
+     *   <li>hash桶太少 hash碰撞的概率就大 从而单个hash桶空间的使用可能达到上限</li>
+     *   <li>hash桶太多 占用空间大而且查询效率低</li>
+     * </ul>
+     * 因此在尝试定桶数量过程中发现桶大小超限就增加桶数量
+     */
     for (size = start; size <= hinit->max_size; size++) {
 
         ngx_memzero(test, size * sizeof(u_short));
-
+        // 计算将所有键值对放到hash表中会不会导致桶过大 用辅助表test记录每个桶大小
         for (n = 0; n < nelts; n++) {
             if (names[n].key.data == NULL) {
                 continue;
             }
-
+            // 键值对应该放在哪个hash桶 数组的脚标
             key = names[n].key_hash % size;
+            // 要是继续把当前键值对放在这个桶里面 之后桶空间的大小达到多大
             len = test[key] + NGX_HASH_ELT_SIZE(&names[n]);
 
 #if 0
@@ -319,14 +345,14 @@ ngx_hash_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names, ngx_uint_t nelts)
                           "%ui: %ui %uz \"%V\"",
                           size, key, len, &names[n].key);
 #endif
-
+            // 选定桶数量是size后 存放nelts个键值对过程中发现有桶的大小超限了 因此要尝试使用更多桶数量
             if (len > bucket_size) {
                 goto next;
             }
-
+            // 更新辅助表记录桶大小
             test[key] = (u_short) len;
         }
-
+        // 找到了合适的桶数量size个 可以保证桶数量金可能少并且桶不过大
         goto found;
 
     next:
@@ -344,16 +370,26 @@ ngx_hash_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names, ngx_uint_t nelts)
                   hinit->name, hinit->bucket_size, hinit->name);
 
 found:
-
+    /*
+     * 此时定下来桶的数量size个 也就是hash表数组长度是size对应脚标是[0...size-1]
+     * test辅助数组的作用依然是记录每个桶被占用的空间
+     * 在上面test已经被使用过一轮了 已经不干净了因此要初始化一下[0...size]脚标
+     * hash桶的内存占用分两部分
+     * <ul>
+     *   <li>顶层一个占位指针</li>
+     *   <li>下面才是真正键值对</li>
+     * </ul>
+     * 所以初始化的时候先每个桶统计指针占用的空间
+     */
     for (i = 0; i < size; i++) {
         test[i] = sizeof(void *);
     }
-
+    // 如果把所有元素放到hash表 在辅助表上记录每个hash桶的大小
     for (n = 0; n < nelts; n++) {
         if (names[n].key.data == NULL) {
             continue;
         }
-
+        // 根据hash定位到键值对放到哪个hash桶
         key = names[n].key_hash % size;
         len = test[key] + NGX_HASH_ELT_SIZE(&names[n]);
 
@@ -393,13 +429,14 @@ found:
                       ((u_char *) hinit->hash + sizeof(ngx_hash_wildcard_t));
 
     } else {
+        // hash数组
         buckets = ngx_pcalloc(hinit->pool, size * sizeof(ngx_hash_elt_t *));
         if (buckets == NULL) {
             ngx_free(test);
             return NGX_ERROR;
         }
     }
-
+    // hash表盛满键值对 hash桶要多大内存
     elts = ngx_palloc(hinit->pool, len + ngx_cacheline_size);
     if (elts == NULL) {
         ngx_free(test);
@@ -407,12 +444,15 @@ found:
     }
 
     elts = ngx_align_ptr(elts, ngx_cacheline_size);
-
+    /*
+     * 已经给hash桶的内存已经分配好 起始地址是elts 每个hash桶要占用多大空间这个信息在test辅助数组中记录着
+     * 很容易就可以把整个内存瓜分给每个hash桶
+     */
     for (i = 0; i < size; i++) {
         if (test[i] == sizeof(void *)) {
             continue;
         }
-
+        // 每个hash桶分配的内存空间 起始地址 等真正存放元素的时候就后移指针就行
         buckets[i] = (ngx_hash_elt_t *) elts;
         elts += test[i];
     }
