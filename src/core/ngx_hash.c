@@ -9,10 +9,12 @@
 #include <ngx_core.h>
 
 /*
+ * 查询hash表 根据键找到对应的值
  * @param hash hash表
- * @param key
- * @param name
- * @param len
+ * @param key 键的hash值
+ * @param name 键
+ * @param len 键的长度
+ * @return 值
  */
 void *
 ngx_hash_find(ngx_hash_t *hash, ngx_uint_t key, u_char *name, size_t len)
@@ -23,24 +25,24 @@ ngx_hash_find(ngx_hash_t *hash, ngx_uint_t key, u_char *name, size_t len)
 #if 0
     ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0, "hf:\"%*s\"", len, name);
 #endif
-
+    // 键落在的桶
     elt = hash->buckets[key % hash->size];
-
+    // 桶顶指针是空的 说明桶是空的
     if (elt == NULL) {
         return NULL;
     }
-
+    // 遍历hash桶里面所有的键值对
     while (elt->value) {
         if (len != (size_t) elt->len) {
             goto next;
         }
-
+        // 找到键 确保找到的键的每个字符都是要找的
         for (i = 0; i < len; i++) {
             if (name[i] != elt->name[i]) {
                 goto next;
             }
         }
-
+        // 找到了对应键的键值对
         return elt->value;
 
     next:
@@ -249,12 +251,20 @@ ngx_hash_find_combined(ngx_hash_combined_t *hash, ngx_uint_t key, u_char *name,
     return NULL;
 }
 
-
+/**
+* 计算一个键值对放到hash桶实际要占用桶里面多大空间
+* <ul>
+*   <li>一个指针 指向值->sizeof(void*)</li>
+*   <li>short 存储键的长度->2</li>
+*   <li>键字符串->name->key.len</li>
+* </ul>
+*/
 #define NGX_HASH_ELT_SIZE(name)                                               \
     (sizeof(void *) + ngx_align((name)->key.len + 2, sizeof(void *)))
 
 /*
- * @param hinit
+ * 把所有键值对names都放到hash表中
+ * @param hinit hash表
  * @param names 键值对列表
  * @param nelts 有多少个键值对要存到hash表
  */
@@ -376,7 +386,7 @@ found:
      * 在上面test已经被使用过一轮了 已经不干净了因此要初始化一下[0...size]脚标
      * hash桶的内存占用分两部分
      * <ul>
-     *   <li>顶层一个占位指针</li>
+     *   <li>顶层一个占位指针 这个指针存放的是桶里面第一个键值对的地址</li>
      *   <li>下面才是真正键值对</li>
      * </ul>
      * 所以初始化的时候先每个桶统计指针占用的空间
@@ -460,33 +470,42 @@ found:
     for (i = 0; i < size; i++) {
         test[i] = 0;
     }
-
+    // 遍历键值对 逐个放到对应hash桶里面
     for (n = 0; n < nelts; n++) {
         if (names[n].key.data == NULL) {
             continue;
         }
-
+        // hash桶数组脚标
         key = names[n].key_hash % size;
+        // test数组中已经缓存好了每个桶的使用大小了 buckets[key]就是桶顶地址 快速计算出键值对存放在桶里面位置
         elt = (ngx_hash_elt_t *) ((u_char *) buckets[key] + test[key]);
-
+        // 存放键值对
+        // 值
         elt->value = names[n].value;
+        // 键的长度
         elt->len = (u_short) names[n].key.len;
-
+        // 键
         ngx_strlow(elt->name, names[n].key.data, names[n].key.len);
-
+        // 新的键值对已经存到了hash桶 此时hash桶的实际使用空间也要更新 加上新增键值对占用空间
         test[key] = (u_short) (test[key] + NGX_HASH_ELT_SIZE(&names[n]));
     }
-
+    /*
+     * 遍历hash桶 找到hash桶上最后一个键值对
+     * 将hash桶里面结束位置清成NULL
+     * 目的是给将来的查询添加一个结束符
+     * 因为test数组仅仅是在添加键值对时候临时使用 将来查询键值对的时候是不知道hash桶里面存放多少个键值对的 因此要放个查找结束符
+     */
     for (i = 0; i < size; i++) {
         if (buckets[i] == NULL) {
+            // 桶顶没放指针 说明是空桶
             continue;
         }
-
+        // 定位到hash桶的结束位置抹成NULL
         elt = (ngx_hash_elt_t *) ((u_char *) buckets[i] + test[i]);
 
         elt->value = NULL;
     }
-
+    // 回收辅助数组
     ngx_free(test);
 
     hinit->hash->buckets = buckets;
