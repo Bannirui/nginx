@@ -293,14 +293,21 @@ ngx_hash_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names, ngx_uint_t nelts)
                       hinit->name, hinit->name, hinit->bucket_size);
         return NGX_ERROR;
     }
-    // 遍历键值对
+    // 遍历键值对 防御性校验 防止桶连一个键值对都放不下
     for (n = 0; n < nelts; n++) {
         if (names[n].key.data == NULL) {
             continue;
         }
-
+        // 防御性校验 防止桶连一个键值对都放不下
         if (hinit->bucket_size < NGX_HASH_ELT_SIZE(&names[n]) + sizeof(void *))
         {
+            /*
+             * 什么情况会这样呢
+             * <ul>
+             *   <li>1是桶大小指定太小</li>
+             *   <li>2是键值对的键过长</li>
+             * </ul>
+             */
             ngx_log_error(NGX_LOG_EMERG, hinit->pool->log, 0,
                           "could not build %s, you should "
                           "increase %s_bucket_size: %i",
@@ -319,9 +326,25 @@ ngx_hash_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names, ngx_uint_t nelts)
     if (test == NULL) {
         return NGX_ERROR;
     }
-    // 抠除桶里面的指针 剩下来的就是实际可以存放键值对的空间
+    // 抠除桶底的NULL分隔符 剩下来的就是实际可以存放键值对的空间
     bucket_size = hinit->bucket_size - sizeof(void *);
-    // 存满nelts个健值对需要多少个桶比较合理
+    /*
+     * 牛逼
+     * 首先明确hash桶中1个键值对占用空间
+     * <ul>
+     *   <li>指向值的指针->占sizeof(void*)大小 8byte</li>
+     *   <li>键的长度->short类型 2byte</li>
+     *   <li>键->不到实际存储的时候都是未知的</li>
+     * </ul>
+     * 那么上面这一坨经过对齐 至少就是16byte 也就是2个sizeof(void*)
+     * 再者 为什么不根据实际键值对计算出来真正需要的桶数据量
+     * 没必要 因为已经定了hash数组长度上限 只要定好下限 然后轮询尝试就行
+     * 那么这个下限是不是可以极限一下到0 当然可以
+     * 下面这个公式的目的就是为了初步定下来最小的桶数量
+     * 一个键对最少占sz=2*sizeof(void*)
+     * 那么一个桶最多盛放的元素数量n=bucket_size/sz
+     * 整个hash表最少需要的桶数量=nelts/n
+     */
     start = nelts / (bucket_size / (2 * sizeof(void *)));
     start = start ? start : 1;
 
@@ -338,7 +361,7 @@ ngx_hash_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names, ngx_uint_t nelts)
      * 因此在尝试定桶数量过程中发现桶大小超限就增加桶数量
      */
     for (size = start; size <= hinit->max_size; size++) {
-
+        // 辅助数组初始化0
         ngx_memzero(test, size * sizeof(u_short));
         // 计算将所有键值对放到hash表中会不会导致桶过大 用辅助表test记录每个桶大小
         for (n = 0; n < nelts; n++) {
@@ -384,12 +407,7 @@ found:
      * 此时定下来桶的数量size个 也就是hash表数组长度是size对应脚标是[0...size-1]
      * test辅助数组的作用依然是记录每个桶被占用的空间
      * 在上面test已经被使用过一轮了 已经不干净了因此要初始化一下[0...size]脚标
-     * hash桶的内存占用分两部分
-     * <ul>
-     *   <li>顶层一个占位指针 这个指针存放的是桶里面第一个键值对的地址</li>
-     *   <li>下面才是真正键值对</li>
-     * </ul>
-     * 所以初始化的时候先每个桶统计指针占用的空间
+     * 初始化的时候先把每个桶的桶底指针占用的空间统计上
      */
     for (i = 0; i < size; i++) {
         test[i] = sizeof(void *);
@@ -414,11 +432,12 @@ found:
 
         test[key] = (u_short) len;
     }
-
+    // 统计所有hash桶占用多大空间
     len = 0;
-
+    // 遍历hash桶 找到不是空桶 统计所有桶占用的大小
     for (i = 0; i < size; i++) {
         if (test[i] == sizeof(void *)) {
+            // 辅助数组记录了桶占用空间就一个指针 说明是空桶
             continue;
         }
 
@@ -457,16 +476,22 @@ found:
     /*
      * 已经给hash桶的内存已经分配好 起始地址是elts 每个hash桶要占用多大空间这个信息在test辅助数组中记录着
      * 很容易就可以把整个内存瓜分给每个hash桶
+     * 此时test辅助数组中存放[0...size-1]每个桶需要的分配空间 空桶只有一个NULL指针占位 自然不用实际分配内存
      */
     for (i = 0; i < size; i++) {
         if (test[i] == sizeof(void *)) {
+            // 空桶不用管
             continue;
         }
-        // 每个hash桶分配的内存空间 起始地址 等真正存放元素的时候就后移指针就行
+        /*
+         * 每个hash桶分配的内存空间 起始地址 等真正存放元素的时候就后移指针就行
+         * 分配给桶的空间已经包含了一个占位指针
+         * 等键值对根据key的hash值定位到桶依次放完之后 桶里面就会在桶底剩下一个指针空间
+         */
         buckets[i] = (ngx_hash_elt_t *) elts;
         elts += test[i];
     }
-
+    // 下面要开始真正放键值对 键值对从桶顶开始放 放元素过程中用test辅助数组统计hash桶使用的空间 因此要在这个地方初始化0
     for (i = 0; i < size; i++) {
         test[i] = 0;
     }
@@ -477,7 +502,7 @@ found:
         }
         // hash桶数组脚标
         key = names[n].key_hash % size;
-        // test数组中已经缓存好了每个桶的使用大小了 buckets[key]就是桶顶地址 快速计算出键值对存放在桶里面位置
+        // test数组中已经缓存好了每个桶的使用大小了 buckets[key]就是桶顶地址 键值对应该存放在桶里面位置
         elt = (ngx_hash_elt_t *) ((u_char *) buckets[key] + test[key]);
         // 存放键值对
         // 值
@@ -486,21 +511,20 @@ found:
         elt->len = (u_short) names[n].key.len;
         // 键
         ngx_strlow(elt->name, names[n].key.data, names[n].key.len);
-        // 新的键值对已经存到了hash桶 此时hash桶的实际使用空间也要更新 加上新增键值对占用空间
+        // 新的键值对已经存到了hash桶 此时hash桶的实际使用空间也要更新 加上新增键值对的占用空间
         test[key] = (u_short) (test[key] + NGX_HASH_ELT_SIZE(&names[n]));
     }
     /*
-     * 遍历hash桶 找到hash桶上最后一个键值对
-     * 将hash桶里面结束位置清成NULL
-     * 目的是给将来的查询添加一个结束符
-     * 因为test数组仅仅是在添加键值对时候临时使用 将来查询键值对的时候是不知道hash桶里面存放多少个键值对的 因此要放个查找结束符
+     * 这个时候已经实际上把所有键值对放到了hash桶
+     * 但是在分配hash桶空间的时候是多分配了个sizeof(void*)的 这个指针的用处就是作为桶与桶之间分割符的
+     * 遍历hash桶 在每个桶的底部插上NULL 也就是让每个桶底的指针都指向NULL
      */
     for (i = 0; i < size; i++) {
         if (buckets[i] == NULL) {
-            // 桶顶没放指针 说明是空桶
+            // 空桶
             continue;
         }
-        // 定位到hash桶的结束位置抹成NULL
+        // 找到桶底插上NULL标识桶分界
         elt = (ngx_hash_elt_t *) ((u_char *) buckets[i] + test[i]);
 
         elt->value = NULL;

@@ -38,13 +38,13 @@ typedef struct {
      * 所谓hash桶 就是hash表中一个数组 数组中每个元素就是一条键值对链表 存放链表的数组元素空间就是hash桶
      * hash桶里面里面放了两部分东西
      * <ul>
-     *   <li>桶首元素 就是桶的最顶上放了个指针 这个指针存的是桶顶的内存地址</li>
-     *   <li>其余才是真正的键值对</li>
+     *   <li>键值对从桶顶依次往下放</li>
+     *   <li>桶底放个指针 是NULL 作为桶与桶之间的分隔符</li>
      * </ul>
      * 为什么要这么设计呢
      * 可以向其他hash表的实现一个在hash桶中用链表组织键值对 但是链表形式太耗内存了
      * 所有的组织形式中数组是最简单高效的
-     * 因此要记录第一个键值对的位置 再知晓有多少个键值对 就可以快速访问数组上的键值对元素
+     * 因为hash表的键值对空间是一次性分配的 也就是hash桶是连在一起的 因此只要在hash桶之间有明确分割 顺着桶顶往下遍历 遇到分割符停下就行 就完成了一次hash桶键值对的扫描
      */
     ngx_hash_elt_t  **buckets;
     // hash表中hash桶个数 就是数组长度 为了加快计算 规定size是2的幂次方 将来知道了key的hash值就可以位运算定位hash桶=hash&(size-1)
@@ -68,6 +68,11 @@ typedef struct {
 } ngx_hash_key_t;
 
 
+/*
+ * 函数指针 用于计算关键字data的hash值
+ * @param data 键
+ * @param len 键的长度
+ */
 typedef ngx_uint_t (*ngx_hash_key_pt) (u_char *data, size_t len);
 
 
@@ -79,18 +84,21 @@ typedef struct {
 
 
 typedef struct {
+    // hash表
     ngx_hash_t       *hash;
+    // 计算键hash值的函数指针
     ngx_hash_key_pt   key;
     // hash表最多bucket数量
     ngx_uint_t        max_size;
     /*
-     * hash桶大小
+     * hash桶大小上限
      * 这个桶的大小是在实例化时候调用方指定的
      * 由2个部分组成
      * <ul>
-     *   <li>指针 这个指针的用处是什么呢 指向桶的桶顶 读到这个指针就可以知道桶有内存地址从什么地方开始</li>
-     *   <li>真正的键值对数据</li>
+     *   <li>真正的键值对数据 键值对从桶顶开始往下放</li>
+     *   <li>指针 这个指针放NULL 紧随桶里面最后一个键值对 放在桶底</li>
      * </ul>
+     * 因为所有hash桶的内存是一次性申请的整片内存 那么怎么区分桶与桶呢 就靠的这个NULL标识两个桶的分隔符
      */
     ngx_uint_t        bucket_size;
 
