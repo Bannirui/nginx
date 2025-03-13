@@ -27,11 +27,11 @@ ngx_hash_find(ngx_hash_t *hash, ngx_uint_t key, u_char *name, size_t len)
 #endif
     // 键落在的桶
     elt = hash->buckets[key % hash->size];
-    // 桶顶指针是空的 说明桶是空的
+    // 桶顶是空的 说明整个桶是空的
     if (elt == NULL) {
         return NULL;
     }
-    // 遍历hash桶里面所有的键值对
+    // 遍历hash桶里面所有的键值对 桶跟桶之间用NULL分隔 遇到NULL说明桶遍历完了
     while (elt->value) {
         if (len != (size_t) elt->len) {
             goto next;
@@ -55,7 +55,10 @@ ngx_hash_find(ngx_hash_t *hash, ngx_uint_t key, u_char *name, size_t len)
     return NULL;
 }
 
-
+/**
+ * @param name 键 可以是真实的key 也可以是带通配符的 比如*.example.com
+ * @param len 键的有效长度 *.example.com的长度是13
+ */
 void *
 ngx_hash_find_wc_head(ngx_hash_wildcard_t *hwc, u_char *name, size_t len)
 {
@@ -67,7 +70,6 @@ ngx_hash_find_wc_head(ngx_hash_wildcard_t *hwc, u_char *name, size_t len)
 #endif
 
     n = len;
-
     while (n) {
         if (name[n - 1] == '.') {
             break;
@@ -75,17 +77,17 @@ ngx_hash_find_wc_head(ngx_hash_wildcard_t *hwc, u_char *name, size_t len)
 
         n--;
     }
-
+	// n=10
     key = 0;
-
+	// github.bannirui的hash值
     for (i = n; i < len; i++) {
         key = ngx_hash(key, name[i]);
     }
-
+	// key=com的hash值
 #if 0
     ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0, "key:\"%ui\"", key);
 #endif
-
+	// com作key对应的值
     value = ngx_hash_find(&hwc->hash, key, &name[n], len - n);
 
 #if 0
@@ -568,7 +570,12 @@ found:
     return NGX_OK;
 }
 
-
+/**
+ * 带通配符的hash表
+ * @param hinit
+ * @param names 键值对
+ * @param nelts 多少个键值对
+ */
 ngx_int_t
 ngx_hash_wildcard_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names,
     ngx_uint_t nelts)
@@ -586,7 +593,6 @@ ngx_hash_wildcard_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names,
     {
         return NGX_ERROR;
     }
-
     if (ngx_array_init(&next_names, hinit->temp_pool, nelts,
                        sizeof(ngx_hash_key_t))
         != NGX_OK)
@@ -595,87 +601,61 @@ ngx_hash_wildcard_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names,
     }
 
     for (n = 0; n < nelts; n = i) {
-
-#if 0
-        ngx_log_error(NGX_LOG_ALERT, hinit->pool->log, 0,
-                      "wc0: \"%V\"", &names[n].key);
-#endif
-
+		/**
+		 * 标识符
+		 * <ul>
+		 *   <li>0标识key不含. 域名不要分级</li>
+		 *   <li>1标识key包含. 域名要分级</li>
+		 * </ul>
+		 */
         dot = 0;
-
         for (len = 0; len < names[n].key.len; len++) {
             if (names[n].key.data[len] == '.') {
                 dot = 1;
                 break;
             }
         }
-
         name = ngx_array_push(&curr_names);
         if (name == NULL) {
             return NGX_ERROR;
         }
-
         name->key.len = len;
         name->key.data = names[n].key.data;
         name->key_hash = hinit->key(name->key.data, name->key.len);
         name->value = names[n].value;
-
-#if 0
-        ngx_log_error(NGX_LOG_ALERT, hinit->pool->log, 0,
-                      "wc1: \"%V\" %ui", &name->key, dot);
-#endif
-
         dot_len = len + 1;
-
         if (dot) {
             len++;
         }
-
         next_names.nelts = 0;
-
         if (names[n].key.len != len) {
             next_name = ngx_array_push(&next_names);
             if (next_name == NULL) {
                 return NGX_ERROR;
             }
-
             next_name->key.len = names[n].key.len - len;
             next_name->key.data = names[n].key.data + len;
             next_name->key_hash = 0;
             next_name->value = names[n].value;
-
-#if 0
-            ngx_log_error(NGX_LOG_ALERT, hinit->pool->log, 0,
-                          "wc2: \"%V\"", &next_name->key);
-#endif
         }
-
         for (i = n + 1; i < nelts; i++) {
             if (ngx_strncmp(names[n].key.data, names[i].key.data, len) != 0) {
                 break;
             }
-
             if (!dot
                 && names[i].key.len > len
                 && names[i].key.data[len] != '.')
             {
                 break;
             }
-
             next_name = ngx_array_push(&next_names);
             if (next_name == NULL) {
                 return NGX_ERROR;
             }
-
             next_name->key.len = names[i].key.len - dot_len;
             next_name->key.data = names[i].key.data + dot_len;
             next_name->key_hash = 0;
             next_name->value = names[i].value;
-
-#if 0
-            ngx_log_error(NGX_LOG_ALERT, hinit->pool->log, 0,
-                          "wc3: \"%V\"", &next_name->key);
-#endif
         }
 
         if (next_names.nelts) {
@@ -709,7 +689,6 @@ ngx_hash_wildcard_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names,
     {
         return NGX_ERROR;
     }
-
     return NGX_OK;
 }
 

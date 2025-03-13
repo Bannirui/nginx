@@ -18,11 +18,16 @@ static void ngx_encode_base64_internal(ngx_str_t *dst, ngx_str_t *src,
 static ngx_int_t ngx_decode_base64_internal(ngx_str_t *dst, ngx_str_t *src,
     const u_char *basis);
 
-
+/**
+ * 字符串转小写 src转到dst
+ * 遍历src字符串每个字符转小写
+ * @param n src字符串长度
+ */
 void
 ngx_strlow(u_char *dst, u_char *src, size_t n)
 {
     while (n) {
+		// 大写转小写
         *dst = ngx_tolower(*src);
         dst++;
         src++;
@@ -30,7 +35,10 @@ ngx_strlow(u_char *dst, u_char *src, size_t n)
     }
 }
 
-
+/**
+ * @param p c字符串 带\0结束符
+ * @return c字符串实际长度
+ */
 size_t
 ngx_strnlen(u_char *p, size_t n)
 {
@@ -46,7 +54,11 @@ ngx_strnlen(u_char *p, size_t n)
     return n;
 }
 
-
+/**
+ * 拷贝字符串
+ * @param n 把src长度n拷贝到dst上
+ * @return 返回dst的末尾地址 也就是\0结束符地址
+ */
 u_char *
 ngx_cpystrn(u_char *dst, u_char *src, size_t n)
 {
@@ -64,13 +76,18 @@ ngx_cpystrn(u_char *dst, u_char *src, size_t n)
         dst++;
         src++;
     }
-
+	// dst是c字符串 结束符
     *dst = '\0';
 
     return dst;
 }
 
-
+/**
+ * 拷贝字符串
+ * @param pool 字符串拷贝到新内存上 新内存从内存池上分配
+ * @param src 拷贝谁
+ * @return 新字符串地址 新字符串没有\0结束符
+ */
 u_char *
 ngx_pstrdup(ngx_pool_t *pool, ngx_str_t *src)
 {
