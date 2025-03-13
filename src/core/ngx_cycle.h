@@ -35,9 +35,12 @@ struct ngx_shm_zone_s {
     ngx_uint_t                noreuse;  /* unsigned  noreuse:1; */
 };
 
-
+/**
+ * nginx的全局变量
+ */
 struct ngx_cycle_s {
     void                  ****conf_ctx;
+	// 内存池 nginx的所有内存都从这个内存池开辟
     ngx_pool_t               *pool;
 
     ngx_log_t                *log;
