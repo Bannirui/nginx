@@ -15,6 +15,9 @@
 
 typedef struct ngx_listening_s  ngx_listening_t;
 
+/**
+ * 套接字
+ */
 struct ngx_listening_s {
     ngx_socket_t        fd;
 

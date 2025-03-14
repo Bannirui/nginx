@@ -208,7 +208,7 @@ main(int argc, char *const *argv)
     if (ngx_strerror_init() != NGX_OK) {
         return 1;
     }
-
+    // 解析命令行参数
     if (ngx_get_options(argc, argv) != NGX_OK) {
         return 1;
     }
@@ -246,7 +246,7 @@ main(int argc, char *const *argv)
      * init_cycle->log is required for signal handlers and
      * ngx_process_options()
      */
-
+    // 初始化化cycle全局变量 先把内存都抹成0 准备后面属性赋值
     ngx_memzero(&init_cycle, sizeof(ngx_cycle_t));
     init_cycle.log = log;
     ngx_cycle = &init_cycle;
@@ -289,7 +289,7 @@ main(int argc, char *const *argv)
     if (ngx_preinit_modules() != NGX_OK) {
         return 1;
     }
-
+    // 真正进行cycle全局变量初始化
     cycle = ngx_init_cycle(&init_cycle);
     if (cycle == NULL) {
         if (ngx_test_config) {
@@ -455,23 +455,27 @@ ngx_show_version_info(void)
     }
 }
 
-
+/**
+ * nginx以master-slave模式运行时 主进程创建监听端口然后将端口传递给worker子进程
+ * 在worker进程重启或者平滑升级时 新进程需要继承这些监听套接字而不是重新绑定端口
+ * 套接字fd保存在系统环境变量里面 多个用;分割
+ */
 static ngx_int_t
 ngx_add_inherited_sockets(ngx_cycle_t *cycle)
 {
     u_char           *p, *v, *inherited;
     ngx_int_t         s;
     ngx_listening_t  *ls;
-
+    // 读取进程环境变量
     inherited = (u_char *) getenv(NGINX_VAR);
-
+    // 环境变量里面没有放fd 没有套接字要继承
     if (inherited == NULL) {
         return NGX_OK;
     }
 
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                   "using inherited sockets from \"%s\"", inherited);
-
+    // 数组用来存放套接字fd
     if (ngx_array_init(&cycle->listening, cycle->pool, 10,
                        sizeof(ngx_listening_t))
         != NGX_OK)
@@ -797,7 +801,9 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
     return pid;
 }
 
-
+/**
+ * 解析命令行参数
+ */
 static ngx_int_t
 ngx_get_options(int argc, char *const *argv)
 {
@@ -943,7 +949,11 @@ ngx_get_options(int argc, char *const *argv)
     return NGX_OK;
 }
 
-
+/**
+ * 把命令行参数缓存到字符串数组中
+ * @param argc 命令行参数个数
+ * @param argv 命令行参数
+ */
 static ngx_int_t
 ngx_save_argv(ngx_cycle_t *cycle, int argc, char *const *argv)
 {
@@ -985,7 +995,10 @@ ngx_save_argv(ngx_cycle_t *cycle, int argc, char *const *argv)
     return NGX_OK;
 }
 
-
+/**
+ * 将从命令行参数解析出来的变量赋值给全局变量
+ * @param cycle 全局变量
+ */
 static ngx_int_t
 ngx_process_options(ngx_cycle_t *cycle)
 {

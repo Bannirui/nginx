@@ -59,7 +59,9 @@ struct ngx_cycle_s {
     ngx_queue_t               reusable_connections_queue;
     ngx_uint_t                reusable_connections_n;
     time_t                    connections_reuse_time;
-
+    /**
+     * nginx监听的套接字端口
+     */
     ngx_array_t               listening;
     ngx_array_t               paths;
 

@@ -27,6 +27,7 @@ static void ngx_unlock_mutexes(ngx_pid_t pid);
 
 
 int              ngx_argc;
+// 全局变量 字符串数组 存放命令行参数
 char           **ngx_argv;
 char           **ngx_os_argv;
 
