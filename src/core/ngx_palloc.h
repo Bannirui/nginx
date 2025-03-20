@@ -21,7 +21,7 @@
  * 内存池每次可以分配内存大小限制 跟系统平台有关
  */
 #define NGX_MAX_ALLOC_FROM_POOL  (ngx_pagesize - 1)
-
+// nginx启动开辟的内存池 初始16K nginx所有的东西都放在这个内存池
 #define NGX_DEFAULT_POOL_SIZE    (16 * 1024)
 
 #define NGX_POOL_ALIGNMENT       16

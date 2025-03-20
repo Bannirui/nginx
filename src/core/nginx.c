@@ -186,6 +186,7 @@ static ngx_uint_t   ngx_show_configure;
 static u_char      *ngx_prefix;
 static u_char      *ngx_error_log;
 static u_char      *ngx_conf_file;
+// 在启动命令通过-g指定的配置参数优先级高于配置文件 nginx -g 配置1;配置2
 static u_char      *ngx_conf_params;
 static char        *ngx_signal;
 
@@ -204,7 +205,7 @@ main(int argc, char *const *argv)
     ngx_core_conf_t  *ccf;
 
     ngx_debug_init();
-
+    // 建立映射 错误码映射错误信息
     if (ngx_strerror_init() != NGX_OK) {
         return 1;
     }
@@ -281,7 +282,7 @@ main(int argc, char *const *argv)
      */
 
     ngx_slab_sizes_init();
-
+    // 看看环境变量有没有要继承的套接字
     if (ngx_add_inherited_sockets(&init_cycle) != NGX_OK) {
         return 1;
     }
@@ -458,7 +459,8 @@ ngx_show_version_info(void)
 /**
  * nginx以master-slave模式运行时 主进程创建监听端口然后将端口传递给worker子进程
  * 在worker进程重启或者平滑升级时 新进程需要继承这些监听套接字而不是重新绑定端口
- * 套接字fd保存在系统环境变量里面 多个用;分割
+ * 套接字fd保存在系统环境变量里面 多个用:或者;分割
+ * 用套接字就要系统调用读取属性信息放到全局变量
  */
 static ngx_int_t
 ngx_add_inherited_sockets(ngx_cycle_t *cycle)
@@ -482,9 +484,10 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
     {
         return NGX_ERROR;
     }
-
+    // v指向第一个数 p一直后移找到分隔符 然后把[v...p)转数字
     for (p = inherited, v = p; *p; p++) {
         if (*p == ':' || *p == ';') {
+            // 字符串转数字
             s = ngx_atoi(v, p - v);
             if (s == NGX_ERROR) {
                 ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
@@ -493,7 +496,7 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
                               " of the variable", v);
                 break;
             }
-
+            // 一组数字转好后移v开始转换第二组
             v = p + 1;
 
             ls = ngx_array_push(&cycle->listening);
@@ -502,7 +505,7 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
             }
 
             ngx_memzero(ls, sizeof(ngx_listening_t));
-
+            // 继承的套接字
             ls->fd = (ngx_socket_t) s;
             ls->inherited = 1;
         }
@@ -515,7 +518,7 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
     }
 
     ngx_inherited = 1;
-
+    // 上面只设置了监听的套接字的fd和继承标识 下面从系统调用获取套接字属性信息放到nginx的全局变量中
     return ngx_set_inherited_sockets(cycle);
 }
 
@@ -896,7 +899,7 @@ ngx_get_options(int argc, char *const *argv)
 
                 ngx_log_stderr(0, "option \"-c\" requires file name");
                 return NGX_ERROR;
-
+            // nginx -g 配置1;配置2 在启动命令指定的配置优先级高于配置文件
             case 'g':
                 if (*p) {
                     ngx_conf_params = p;

@@ -67,7 +67,10 @@ ngx_strerror_init(void)
  *    causing false bug reports.
  */
 
-
+/**
+ * 全局变量 缓存着错误码跟错误信息的映射
+ * 系统启动的时候就建立好映射关系 后面直接使用 不用每次都调用系统调用了
+ */
 static ngx_str_t  *ngx_sys_errlist;
 static ngx_err_t   ngx_first_error;
 static ngx_err_t   ngx_last_error;
@@ -90,7 +93,10 @@ ngx_strerror(ngx_err_t err, u_char *errstr, size_t size)
     return ngx_cpymem(errstr, msg->data, size);
 }
 
-
+/**
+ * 把错误码映射的错误信息缓存到ngx_sys_errlist
+ * 后面就可以拿着错误码直接查找到对应的错误信息 不用每次都进行系统调用
+ */
 ngx_int_t
 ngx_strerror_init(void)
 {
@@ -100,6 +106,7 @@ ngx_strerror_init(void)
     ngx_err_t   err;
 
 #if (NGX_SYS_NERR)
+    // 错误码的区间[0...107)
     ngx_first_error = 0;
     ngx_last_error = NGX_SYS_NERR;
 
@@ -171,13 +178,14 @@ ngx_strerror_init(void)
      */
 
     len = (ngx_last_error - ngx_first_error) * sizeof(ngx_str_t);
-
+    // 缓存错误信息
     ngx_sys_errlist = malloc(len);
     if (ngx_sys_errlist == NULL) {
         goto failed;
     }
-
+    // 遍历错误码 把错误码对应映射的错误信息都缓存起来
     for (err = ngx_first_error; err < ngx_last_error; err++) {
+        // 系统调用 错误码对应的错误描述
         msg = strerror(err);
 
         if (msg == NULL) {

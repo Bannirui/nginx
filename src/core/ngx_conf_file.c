@@ -58,7 +58,11 @@ static ngx_uint_t argument_number[] = {
     NGX_CONF_TAKE7
 };
 
-
+/**
+ * 解析配置参数
+ * @param cf
+ * @return
+ */
 char *
 ngx_conf_param(ngx_conf_t *cf)
 {
@@ -66,9 +70,9 @@ ngx_conf_param(ngx_conf_t *cf)
     ngx_str_t        *param;
     ngx_buf_t         b;
     ngx_conf_file_t   conf_file;
-
+    // nginx -g指定的配置参数
     param = &cf->cycle->conf_param;
-
+    // 没有通过nginx -g传配置参数
     if (param->len == 0) {
         return NGX_CONF_OK;
     }
@@ -153,7 +157,16 @@ ngx_conf_add_dump(ngx_conf_t *cf, ngx_str_t *filename)
     return NGX_OK;
 }
 
-
+/**
+ * 解析配置
+ * <ul>
+ *   <li>指定filename就从配置文件</li>
+ *   <li>没有指定filename就从启动命令nginx -g解析</li>
+ * </ul>
+ * @param cf
+ * @param filename 控制是不是要解析配置文件 NULL说明没有配置文件
+ * @return
+ */
 char *
 ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
 {
@@ -162,6 +175,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
     ngx_int_t         rc;
     ngx_buf_t         buf;
     ngx_conf_file_t  *prev, conf_file;
+    // 解析配置的场景
     enum {
         parse_file = 0,
         parse_block,
@@ -235,6 +249,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
         type = parse_block;
 
     } else {
+        // 要解析的配置来自nginx -g命令行指定
         type = parse_param;
     }
 

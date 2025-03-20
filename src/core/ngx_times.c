@@ -27,6 +27,7 @@ static ngx_uint_t        slot;
 static ngx_atomic_t      ngx_time_lock;
 
 volatile ngx_msec_t      ngx_current_msec;
+// 全局指针 指向的cached_time数组
 volatile ngx_time_t     *ngx_cached_time;
 volatile ngx_str_t       ngx_cached_err_log_time;
 volatile ngx_str_t       ngx_cached_http_time;
@@ -44,7 +45,7 @@ volatile ngx_str_t       ngx_cached_syslog_time;
 
 static ngx_int_t         cached_gmtoff;
 #endif
-
+// 缓存时间 减少系统调用 数组长度通过宏NGX_TIME_SLOTS控制 长度64
 static ngx_time_t        cached_time[NGX_TIME_SLOTS];
 static u_char            cached_err_log_time[NGX_TIME_SLOTS]
                                     [sizeof("1970/09/28 12:00:00")];
@@ -76,7 +77,10 @@ ngx_time_init(void)
     ngx_time_update();
 }
 
-
+/**
+ * 更新时间
+ * 加锁防止并发操作污染共享资源
+ */
 void
 ngx_time_update(void)
 {
@@ -90,14 +94,14 @@ ngx_time_update(void)
     if (!ngx_trylock(&ngx_time_lock)) {
         return;
     }
-
+    // 获取系统当前时间
     ngx_gettimeofday(&tv);
 
     sec = tv.tv_sec;
     msec = tv.tv_usec / 1000;
 
     ngx_current_msec = ngx_monotonic_time(sec, msec);
-
+    // 缓存当前系统时间
     tp = &cached_time[slot];
 
     if (tp->sec == sec) {
@@ -116,7 +120,7 @@ ngx_time_update(void)
 
     tp->sec = sec;
     tp->msec = msec;
-
+    // 时间格式转换 秒转年月日时分秒
     ngx_gmtime(sec, &gmt);
 
 
@@ -178,7 +182,7 @@ ngx_time_update(void)
     (void) ngx_sprintf(p4, "%s %2d %02d:%02d:%02d",
                        months[tm.ngx_tm_mon - 1], tm.ngx_tm_mday,
                        tm.ngx_tm_hour, tm.ngx_tm_min, tm.ngx_tm_sec);
-
+    // gcc内存屏障 保证cpu读写顺序 防止指令重排
     ngx_memory_barrier();
 
     ngx_cached_time = tp;
@@ -319,7 +323,11 @@ ngx_http_cookie_time(u_char *buf, time_t t)
                        tm.ngx_tm_sec);
 }
 
-
+/**
+ * 时间格式转换 秒转年月日时分秒
+ * @param t 要转换的时间 单位秒
+ * @param tp 年月日时分秒格式
+ */
 void
 ngx_gmtime(time_t t, ngx_tm_t *tp)
 {

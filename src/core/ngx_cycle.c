@@ -34,7 +34,9 @@ ngx_uint_t             ngx_quiet_mode;
 static ngx_connection_t  dumb;
 /* STUB */
 
-
+/**
+ * @return 全局变量 nginx生命周期的变量都在这
+ */
 ngx_cycle_t *
 ngx_init_cycle(ngx_cycle_t *old_cycle)
 {
@@ -60,12 +62,12 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
     tp = ngx_timeofday();
     tp->sec = 0;
-
+    // 更新时间
     ngx_time_update();
 
 
     log = old_cycle->log;
-
+    // 开辟16KB初始大小的内存池 后面所有东西都分配在这个内存池
     pool = ngx_create_pool(NGX_CYCLE_POOL_SIZE, log);
     if (pool == NULL) {
         return NULL;
@@ -274,13 +276,13 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 #if 0
     log->log_level = NGX_LOG_DEBUG_ALL;
 #endif
-
+    // 解析配置参数 nginx -g命令行带进来的参数
     if (ngx_conf_param(&conf) != NGX_CONF_OK) {
         environ = senv;
         ngx_destroy_cycle_pools(&conf);
         return NULL;
     }
-
+    // 从配置文件解析配置参数
     if (ngx_conf_parse(&conf, &cycle->conf_file) != NGX_CONF_OK) {
         environ = senv;
         ngx_destroy_cycle_pools(&conf);
@@ -620,7 +622,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 #endif
         }
     }
-
+    // 要监听的端口开启tcp套接字的监听 等待连接过来
     if (ngx_open_listening_sockets(cycle) != NGX_OK) {
         goto failed;
     }

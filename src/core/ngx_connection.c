@@ -130,7 +130,9 @@ ngx_clone_listening(ngx_cycle_t *cycle, ngx_listening_t *ls)
     return NGX_OK;
 }
 
-
+/**
+ * 已知套接字fd后 从系统调用中读取套接字的属性信息
+ */
 ngx_int_t
 ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 {
@@ -150,7 +152,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 #if (NGX_HAVE_REUSEPORT)
     int                        reuseport;
 #endif
-
+    // 监听套接字数组
     ls = cycle->listening.elts;
     for (i = 0; i < cycle->listening.nelts; i++) {
 
@@ -402,7 +404,17 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/**
+ * 服务端开启tcp的连接监听
+ * 涉及到的系统调用
+ * <ul>
+ *   <li>socket</li>
+ *   <li>bind</li>
+ *   <li>listen</li>
+ * </ul>
+ * @param cycle nginx的全局变量
+ * @return
+ */
 ngx_int_t
 ngx_open_listening_sockets(ngx_cycle_t *cycle)
 {
@@ -421,12 +433,12 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
     log = cycle->log;
 
     /* TODO: configurable try number */
-
+    // 防止socket系统调用失败 容错
     for (tries = 5; tries; tries--) {
         failed = 0;
 
         /* for each listening socket */
-
+        // 数组头
         ls = cycle->listening.elts;
         for (i = 0; i < cycle->listening.nelts; i++) {
 
@@ -486,7 +498,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
 
                 continue;
             }
-
+            // 创建socket
             s = ngx_socket(ls[i].sockaddr->sa_family, ls[i].type, 0);
 
             if (s == (ngx_socket_t) -1) {
@@ -496,7 +508,8 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
             }
 
             if (ls[i].type != SOCK_DGRAM || !ngx_test_config) {
-
+                // tcp协议
+                // 允许重用地址
                 if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
                                (const void *) &reuseaddr, sizeof(int))
                     == -1)
@@ -542,7 +555,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
                 }
 
 #else
-
+                // 允许重用端口
                 if (setsockopt(s, SOL_SOCKET, SO_REUSEPORT,
                                (const void *) &reuseport, sizeof(int))
                     == -1)
@@ -564,7 +577,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
 #endif
 
 #if (NGX_HAVE_INET6 && defined IPV6_V6ONLY)
-
+            // ipv6
             if (ls[i].sockaddr->sa_family == AF_INET6) {
                 int  ipv6only;
 
@@ -600,7 +613,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
 
             ngx_log_debug2(NGX_LOG_DEBUG_CORE, log, 0,
                            "bind() %V #%d ", &ls[i].addr_text, s);
-
+            // 绑定到一个特定的地址和端口 确保服务器可以监听和接收特定地址上的连接
             if (bind(s, ls[i].sockaddr, ls[i].socklen) == -1) {
                 err = ngx_socket_errno;
 
@@ -653,7 +666,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
                 ls[i].fd = s;
                 continue;
             }
-
+            // 开启监听模式 允许服务器接收客户端连接
             if (listen(s, ls[i].backlog) == -1) {
                 err = ngx_socket_errno;
 

@@ -979,7 +979,12 @@ ngx_filename_cmp(u_char *s1, u_char *s2, size_t n)
     return 0;
 }
 
-
+/**
+ * 字符串转数字
+ * @param line 字符串
+ * @param n 字符串长度
+ * @return 转的数字
+ */
 ngx_int_t
 ngx_atoi(u_char *line, size_t n)
 {
@@ -993,6 +998,7 @@ ngx_atoi(u_char *line, size_t n)
     cutlim = NGX_MAX_INT_T_VALUE % 10;
 
     for (value = 0; n--; line++) {
+        // 数字不合法
         if (*line < '0' || *line > '9') {
             return NGX_ERROR;
         }

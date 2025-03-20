@@ -18,7 +18,7 @@
 #else
 #define NGINX_VER_BUILD    NGINX_VER
 #endif
-
+// 环境变量 放继承套接字
 #define NGINX_VAR          "NGINX"
 #define NGX_OLDPID_EXT     ".oldbin"
 

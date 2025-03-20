@@ -19,6 +19,9 @@ typedef struct ngx_listening_s  ngx_listening_t;
  * 套接字
  */
 struct ngx_listening_s {
+    /**
+     * 套接字端口
+     */
     ngx_socket_t        fd;
 
     struct sockaddr    *sockaddr;
@@ -62,6 +65,9 @@ struct ngx_listening_s {
     unsigned            ignore:1;
 
     unsigned            bound:1;       /* already bound */
+    /**
+     * 标识套接字是继承的 1标识是继承的
+     */
     unsigned            inherited:1;   /* inherited from previous process */
     unsigned            nonblocking_accept:1;
     unsigned            listen:1;

@@ -40,7 +40,7 @@ struct ngx_shm_zone_s {
  */
 struct ngx_cycle_s {
     void                  ****conf_ctx;
-	// 内存池 nginx的所有内存都从这个内存池开辟
+	// 内存池 nginx的所有内存都从这个内存池开辟 初始大小16KB
     ngx_pool_t               *pool;
 
     ngx_log_t                *log;
@@ -80,8 +80,9 @@ struct ngx_cycle_s {
     ngx_event_t              *write_events;
 
     ngx_cycle_t              *old_cycle;
-
+    // 配置文件路径
     ngx_str_t                 conf_file;
+    // nginx -g指定的配置参数 字符串
     ngx_str_t                 conf_param;
     ngx_str_t                 conf_prefix;
     ngx_str_t                 prefix;
