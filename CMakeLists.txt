@@ -11,9 +11,6 @@ include(CheckCSourceRuns)
 include(CheckTypeSize)
 include(TestBigEndian)
 
-# nginx配置文件所在目录 /usr/local/conf
-get_filename_component(NGX_CONF_PREFIX "${NGX_CONF_PATH}" DIRECTORY)
-
 # 模板生成文件
 configure_file(ngx_auto_headers.h.in ${CMAKE_CURRENT_BINARY_DIR}/ngx_auto_headers.h)
 configure_file(ngx_auto_config.h.in ${CMAKE_CURRENT_BINARY_DIR}/ngx_auto_config.h)
@@ -237,14 +234,21 @@ target_link_libraries(${PROJECT_NAME}
         ${REQ_LIBRARIES}
 )
 
+
 # 安装路径 /usr/local
 # 安装可执行文件
 set(NGX_DIR "${CMAKE_INSTALL_PREFIX}/nginx" CACHE STRING "")
-set(NGX_BIN_DIR "${CMAKE_INSTALL_PREFIX}/nginx/sbin" CACHE STRING "")
+# nginx的安装目录 没有指定就默认/usr/local/nginx
+set(NGX_PREFIX "${NGX_DIR}/" CACHE STRING "")
+message(STATUS "nginx的安装路径是${NGX_PREFIX}")
+# 定义宏
+target_compile_definitions(${PROJECT_NAME} PRIVATE NGX_PREFIX="${NGX_PREFIX}")
+
+set(NGX_BIN_DIR "${NGX_DIR}/sbin" CACHE STRING "")
 # nginx的配置文件
-set(NGX_CONF_DIR "${CMAKE_INSTALL_PREFIX}/nginx/conf" CACHE STRING "")
+set(NGX_CONF_DIR "${NGX_DIR}/conf" CACHE STRING "")
 # 日志目录
-set(NGX_LOG_DIR "${CMAKE_INSTALL_PREFIX}/nginx/logs" CACHE STRING "")
+set(NGX_LOG_DIR "${NGX_DIR}/logs" CACHE STRING "")
 # 可执行程序
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION ${NGX_BIN_DIR})
 # 默认服务

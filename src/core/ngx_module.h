@@ -14,7 +14,7 @@
 #include <ngx_core.h>
 #include <nginx.h>
 
-
+// 模块的索引编号 用数组脚标可以快速检索 默认值-1表示还没设置合法的索引号
 #define NGX_MODULE_UNSET_INDEX  (ngx_uint_t) -1
 
 
@@ -223,11 +223,15 @@
 
 #define NGX_MODULE_V1_PADDING  0, 0, 0, 0, 0, 0, 0, 0
 
-
+/**
+ * 模块
+ * 为nginx模块抽象出来的封装
+ */
 struct ngx_module_s {
     ngx_uint_t            ctx_index;
+    // 模块的编号 0-based
     ngx_uint_t            index;
-
+    // 模块名称
     char                 *name;
 
     ngx_uint_t            spare0;
@@ -242,6 +246,9 @@ struct ngx_module_s {
 
     ngx_int_t           (*init_master)(ngx_log_t *log);
 
+    /**
+     * 回调方法 用来初始化每个模块
+     */
     ngx_int_t           (*init_module)(ngx_cycle_t *cycle);
 
     ngx_int_t           (*init_process)(ngx_cycle_t *cycle);

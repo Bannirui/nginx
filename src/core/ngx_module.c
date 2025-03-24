@@ -17,28 +17,40 @@ static ngx_uint_t ngx_module_index(ngx_cycle_t *cycle);
 static ngx_uint_t ngx_module_ctx_index(ngx_cycle_t *cycle, ngx_uint_t type,
     ngx_uint_t index);
 
-
+// 最多开启的模块数量
 ngx_uint_t         ngx_max_module;
+// 模块数量计数
 static ngx_uint_t  ngx_modules_n;
 
-
+/*
+ * 遍历模块
+ * <ul>
+ *   <li>给模块编上号</li>
+ *   <li>模块名称</li>
+ *   <li>统计模块数量</li>
+ * </ul>
+ */
 ngx_int_t
 ngx_preinit_modules(void)
 {
     ngx_uint_t  i;
-
+    /*
+     * 遍历模块 给每个模块编上号和名称
+     */
     for (i = 0; ngx_modules[i]; i++) {
         ngx_modules[i]->index = i;
         ngx_modules[i]->name = ngx_module_names[i];
     }
-
+    // 模块数量计数52
     ngx_modules_n = i;
     ngx_max_module = ngx_modules_n + NGX_MAX_DYNAMIC_MODULES;
 
     return NGX_OK;
 }
 
-
+/**
+ * 把所有的模块元信息放到全局变量中
+ */
 ngx_int_t
 ngx_cycle_modules(ngx_cycle_t *cycle)
 {
@@ -46,27 +58,27 @@ ngx_cycle_modules(ngx_cycle_t *cycle)
      * create a list of modules to be used for this cycle,
      * copy static modules to it
      */
-
+    // 分配内存空间存放所有的模块信息
     cycle->modules = ngx_pcalloc(cycle->pool, (ngx_max_module + 1)
                                               * sizeof(ngx_module_t *));
     if (cycle->modules == NULL) {
         return NGX_ERROR;
     }
-
+    // 初始化nginx所有的模块信息 51个模块
     ngx_memcpy(cycle->modules, ngx_modules,
                ngx_modules_n * sizeof(ngx_module_t *));
-
+    // nginx的所有的模块数量
     cycle->modules_n = ngx_modules_n;
 
     return NGX_OK;
 }
 
-
+// 遍历所有模块 回调每个模块的init_module方法进行初始化
 ngx_int_t
 ngx_init_modules(ngx_cycle_t *cycle)
 {
     ngx_uint_t  i;
-
+    // 遍历所有模块 回调每个模块的init_module方法进行初始化
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->init_module) {
             if (cycle->modules[i]->init_module(cycle) != NGX_OK) {
@@ -78,7 +90,10 @@ ngx_init_modules(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*
+ *
+ * @param type 模块类型标识 HTTP模块 EVENT模块 MAIL模块
+ */
 ngx_int_t
 ngx_count_modules(ngx_cycle_t *cycle, ngx_uint_t type)
 {
@@ -92,7 +107,7 @@ ngx_count_modules(ngx_cycle_t *cycle, ngx_uint_t type)
 
     for (i = 0; cycle->modules[i]; i++) {
         module = cycle->modules[i];
-
+        // 遍历所有模块找到同类型的
         if (module->type != type) {
             continue;
         }
@@ -275,7 +290,10 @@ ngx_add_module(ngx_conf_t *cf, ngx_str_t *file, ngx_module_t *module,
     return NGX_OK;
 }
 
-
+/**
+ * 51个模块 索引编号0-based [0...50] 找到没使用的索引脚标分配出去
+ * @return 可用的模块索引号
+ */
 static ngx_uint_t
 ngx_module_index(ngx_cycle_t *cycle)
 {
@@ -287,7 +305,7 @@ ngx_module_index(ngx_cycle_t *cycle)
 again:
 
     /* find an unused index */
-
+    // 从0开始找没被使用的模块索引号分配出去
     for (i = 0; cycle->modules[i]; i++) {
         module = cycle->modules[i];
 
@@ -314,7 +332,17 @@ again:
     return index;
 }
 
-
+/**
+ * 为模块分配可用的索引号
+ * 模块的检索分两个维度
+ * <ul>
+ *   <li>1 是模块的类型 EVENT模块 HTTP模块 MAIL模块</li>
+ *   <li>2 是同类型模块的索引编号 0-based</li>
+ * </ul>
+ * @param type 模块类型标识 比如EVENT HTTP MAIL
+ * @param index 同类型模块索引号
+ * @return  可用的模块索引号
+ */
 static ngx_uint_t
 ngx_module_ctx_index(ngx_cycle_t *cycle, ngx_uint_t type, ngx_uint_t index)
 {
