@@ -34,7 +34,24 @@ static char *ngx_event_debug_connection(ngx_conf_t *cf, ngx_command_t *cmd,
 static void *ngx_event_core_create_conf(ngx_cycle_t *cycle);
 static char *ngx_event_core_init_conf(ngx_cycle_t *cycle, void *conf);
 
-
+/*
+ * 事件的时间精度 单位毫秒
+ * 定义了事件模块处理事件的最小时间间隔
+ * 定时器事件的触发时机不会小于这个时间间隔
+ * 比如是100ms 那么即使定时器任务在设置的时间点上应该触发 它也会在下一个100毫秒的周期中执行
+ * 如何影响定时器事件
+ * 定时器事件通过事件驱动模型被管理 定时器事件通常会被注册到事件处理循环中 当定时器超时时 事件处理机制会根据ngx_timer_resolution来计算何时触发
+ * <ul>
+ *   <li>如果ngx_timer_resolution设置得比较低 Nginx会更多地检查定时器事件 但这样可能会导致性能开销增加 因为更多的时间片被用来检查和触发定时器事件</li>
+ *   <li>较高的分辨率可能会导致定时器事件的触发延迟 但会减少检查频率 从而提高系统的吞吐量</li>
+ * </ul>
+ * 这个机制的设定是什么概念呢 这是一个全局变量 表示Nginx主循环检查定时器事件的精度(单位是毫秒)
+ * 本质就是对线程的唤醒方式的设定
+ * <ul>
+ *   <li>一种是不设定定时精度 那么在调用系统调用的时候带上超时 让线程的唤醒托管给selector系统调用</li>
+ *   <li>另一种是设定定时精度 用系统定时器setitimer+SIGALRM定期唤醒主循环 这样做的好处是可以让事件精度更可控 更精准地处理定时器事件 适合对时间敏感的应用场景</li>
+ * </ul>
+ */
 static ngx_uint_t     ngx_timer_resolution;
 sig_atomic_t          ngx_event_timer_alarm;
 
@@ -50,10 +67,27 @@ ngx_atomic_t         *ngx_connection_counter = &connection_counter;
 
 ngx_atomic_t         *ngx_accept_mutex_ptr;
 ngx_shmtx_t           ngx_accept_mutex;
+/*
+ * nginx支持多进程 在多进程模式下 大家都监听在相同端口下 所有工作进程都处于监听状态
+ * 当有新的连接进来时 如果没有控制就会导致多个进程同时接收到同一个请求 这种情况被称为竞争接收 可能会导致的问题
+ * <ul>
+ *   <li>连接被多个进程同时处理</li>
+ *   <li>资源浪费</li>
+ * </ul>
+ * 为了避免这种情况引入了accept mutex 即一个互斥锁 确保在同一时刻只有一个进程能够接收新的连接 其他进程需要等待
+ * ngx_use_accept_mutex这个标识就用来标识要不要开启互斥机制
+ * <ul>
+ *   <li>单进程模式下肯定就不用开启 0标识</li>
+ *   <li>多进程模式下需要启用 1标识</li>
+ * </ul>
+ */
 ngx_uint_t            ngx_use_accept_mutex;
 ngx_uint_t            ngx_accept_events;
+// 当前进程是不是已经抢到了accept锁
 ngx_uint_t            ngx_accept_mutex_held;
+// 抢accept锁失败后多久再重试
 ngx_msec_t            ngx_accept_mutex_delay;
+// 控制什么时候不去accept新连接 如连接数满了
 ngx_int_t             ngx_accept_disabled;
 ngx_uint_t            ngx_use_exclusive_accept;
 
@@ -181,7 +215,9 @@ ngx_module_t  ngx_event_core_module = {
     ngx_event_core_commands,               /* module directives */
     NGX_EVENT_MODULE,                      /* module type */
     NULL,                                  /* init master */
+    // 负责初始化事件模块需要的全局资源和配置
     ngx_event_module_init,                 /* init module */
+    // 事件初始化函数 在nginx工作进程启动后 为工作进程的事件循环做初始化
     ngx_event_process_init,                /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
@@ -190,18 +226,39 @@ ngx_module_t  ngx_event_core_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
+/**
+ * 事件循环的处理
+ */
 void
 ngx_process_events_and_timers(ngx_cycle_t *cycle)
 {
+    /*
+     * 这个标识用来控制就绪事件
+     * <ul>
+     *   <li>NGX_POST_EVENTS 让事件入队后异步处理</li>
+     * </ul>
+     */
     ngx_uint_t  flags;
+    /*
+     * timer定时器
+     * 可能的值
+     * <ul>
+     *   <li>NGX_TIMER_INFINITE</li>
+     *   <li>普通任务队列中最近的超时时间</li>
+     *   <li>ngx_accept_mutex_delay</li>
+     *   <li>0</li>
+     * </ul>
+     */
     ngx_msec_t  timer, delta;
 
     if (ngx_timer_resolution) {
+        // 设置了事件处理精度的情况下定时器设置为无穷大让定时器永远不会被触发
         timer = NGX_TIMER_INFINITE;
         flags = 0;
 
     } else {
+        // 没有设置事件处理精度
+        // 再过timer毫秒需要唤醒阻塞进行任务调度
         timer = ngx_event_find_timer();
         flags = NGX_UPDATE_TIME;
 
@@ -226,6 +283,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
             }
 
             if (ngx_accept_mutex_held) {
+                // 事件要入队处理
                 flags |= NGX_POST_EVENTS;
 
             } else {
@@ -244,22 +302,60 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     }
 
     delta = ngx_current_msec;
-
+    /*
+     * <ul>
+     *   <li>ngx_process_events是个宏定义</li>
+     *   <li>这个宏是接口ngx_event_actions中的方法process_events</li>
+     *   <li>至于接口对应的实现是在编译时根据启用的模块进行赋值 kequeue的是ngx_kqueue_module_ctx中的actions</li>
+     * </ul>
+     * 最终调用到系统的kq 拿到就绪的网络IO事件
+     * 能继续执行下去的场景一定是
+     * <ul>
+     *   <li>虽然没有设置系统调用超时 但是有网络事件就绪</li>
+     *   <li>设置了系统调用超时 在超时到期之前就有网络事件就绪</li>
+     *   <li>设置了系统调用超时 一直没有网络事件就绪 直到超时到期</li>
+     *   <li>在复用器上注册了定时器事件 虽然没有网络事件 但是定时器事件触发了</li>
+     * </ul>
+     */
     (void) ngx_process_events(cycle, timer, flags);
 
     delta = ngx_current_msec - delta;
 
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "timer delta: %M", delta);
-
+    // 先处理网络accept连接事件
     ngx_event_process_posted(cycle, &ngx_posted_accept_events);
 
     if (ngx_accept_mutex_held) {
         ngx_shmtx_unlock(&ngx_accept_mutex);
     }
-
+    /*
+     * 处理普通任务 定时任务
+     * 执行到这的情况有两种
+     * <ul>
+     *   <li>系统调用kq指定的超时时间 超时到期了 而这个超时时间就是在系统调用前根据任务队列的到期时间算出来的</li>
+     *   <li>系统调用kq没有指定超时时间 让系统调用阻塞执行 但是这种情况会搭配往复用器注册定时器事件来唤醒阻塞线程</li>
+     * </ul>
+     * 其实不管哪种方式执行到这 都是为了配合系统时间才起作用
+     * 执行定时任务的时候的逻辑是拿着任务的过期时间跟当前系统时间比较 到期了就执行
+     * 想要获得系统时间就要调用gettimeofday 对于高性能服务器而言 频繁的系统调用是笔很大的开销
+     * nginx在性能和定时任务的执行精度做了权衡
+     * <ul>
+     *   <li>每次都系统调用获取系统时间开销大 时间精确</li>
+     *   <li>缓存一个系统时间 每次从内存拿开销小 时间一定会不精准 有滞后</li>
+     * </ul>
+     * 所以现在的矛盾变成了怎么解决内存上缓存着的时间精度 换言之就是怎么更新缓存的系统时间 所以引申出来的机制就是更新缓存的系统时间的频率就是系统时间的精度
+     * 怎么更新系统时间 对应的方式是向复用器注册定时器事件 定时器事件就绪就去更新系统时间
+     * 更新系统时间的精度 对应的就是定时器事件的执行间隔 比如设置定时器间隔是100ms 那么每隔100s就会去更新一次缓存的系统时间 也就意味着缓存的系统时间比实时的系统时间滞后最多100ms
+     * 意味着当执行定时任务的时候参考的系统时间存在的精度误差导致定时任务的执行精度问题
+     * 所以
+     * <ul>
+     *   <li>如果不在乎定时任务的管理精度 就没必要启用高精度定时器机制</li>
+     *   <li>如果需要精细管理定时任务 就可以依赖高精度定时器机制</li>
+     * </ul>
+     */
     ngx_event_expire_timers();
-
+    // 再处理网络IO的读写事件
     ngx_event_process_posted(cycle, &ngx_posted_events);
 }
 
@@ -487,7 +583,14 @@ ngx_event_init_conf(ngx_cycle_t *cycle, void *conf)
     return NGX_CONF_OK;
 }
 
-
+/**
+ * ngx_event_core_module 模块初始化的时候会回调
+ * <ul>
+ *   <li>互斥锁创建</li>
+ * </ul>
+ * @param cycle
+ * @return 操作状态码
+ */
 static ngx_int_t
 ngx_event_module_init(ngx_cycle_t *cycle)
 {
@@ -498,24 +601,30 @@ ngx_event_module_init(ngx_cycle_t *cycle)
     ngx_time_t          *tp;
     ngx_core_conf_t     *ccf;
     ngx_event_conf_t    *ecf;
-
+    /*
+     * event模块的配置
+     * 得到的cf是void***
+     * 解引用得到void** 是一个void*的数组
+     * 按照脚标索引到的是void* 具体某种类型的某个模块的配置
+     */
     cf = ngx_get_conf(cycle->conf_ctx, ngx_events_module);
+    // 配置是用指针指向的void* 强转到event模块的配置
     ecf = (*cf)[ngx_event_core_module.ctx_index];
 
     if (!ngx_test_config && ngx_process <= NGX_PROCESS_MASTER) {
         ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                       "using the \"%s\" event method", ecf->name);
     }
-
+    // nginx core模块的配置
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
-
+    // 定时器的时间精度
     ngx_timer_resolution = ccf->timer_resolution;
 
 #if !(NGX_WIN32)
     {
     ngx_int_t      limit;
     struct rlimit  rlmt;
-
+    // 拿到进程同时打开文件描述符数量
     if (getrlimit(RLIMIT_NOFILE, &rlmt) == -1) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                       "getrlimit(RLIMIT_NOFILE) failed, ignored");
@@ -566,20 +675,22 @@ ngx_event_module_init(ngx_cycle_t *cycle)
            + cl;         /* ngx_stat_waiting */
 
 #endif
-
+    // 共享内存的大小
     shm.size = size;
+    // 共享内存的名称
     ngx_str_set(&shm.name, "nginx_shared_zone");
     shm.log = cycle->log;
-
+    // 映射共享内存
     if (ngx_shm_alloc(&shm) != NGX_OK) {
         return NGX_ERROR;
     }
-
+    // 共享内存的起始地址 这个地方放的是该共享内存的互斥锁
     shared = shm.addr;
 
     ngx_accept_mutex_ptr = (ngx_atomic_t *) shared;
+    // 标识互斥锁不是自旋锁
     ngx_accept_mutex.spin = (ngx_uint_t) -1;
-
+    // 互斥锁不是自旋锁 设置一下互斥锁的锁对象
     if (ngx_shmtx_create(&ngx_accept_mutex, (ngx_shmtx_sh_t *) shared,
                          cycle->lock_file.data)
         != NGX_OK)
@@ -631,7 +742,9 @@ ngx_timer_signal_handler(int signo)
 
 #endif
 
-
+/**
+ * 在nginx工作进程启动后 为事件模块的循环事件做初始化工作
+ */
 static ngx_int_t
 ngx_event_process_init(ngx_cycle_t *cycle)
 {
@@ -647,11 +760,13 @@ ngx_event_process_init(ngx_cycle_t *cycle)
     ecf = ngx_event_get_conf(cycle->conf_ctx, ngx_event_core_module);
 
     if (ccf->master && ccf->worker_processes > 1 && ecf->accept_mutex) {
+        // 多进程模式下开启竞争接收
         ngx_use_accept_mutex = 1;
         ngx_accept_mutex_held = 0;
         ngx_accept_mutex_delay = ecf->accept_mutex_delay;
 
     } else {
+        // 单进程模式下不需要开启竞争接收
         ngx_use_accept_mutex = 0;
     }
 

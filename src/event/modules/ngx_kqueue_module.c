@@ -9,9 +9,11 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 
-
+// kq模块的配置
 typedef struct {
+    // 对应kq系统调用的changelist 决定changelist的长度 一次可以注册多少个事件变更
     ngx_uint_t  changes;
+    // 对应kq系统调用的eventlist 决定eventlist的长度 一次最多可以等待多少个事件
     ngx_uint_t  events;
 } ngx_kqueue_conf_t;
 
@@ -38,11 +40,16 @@ static ngx_inline void ngx_kqueue_dump_event(ngx_log_t *log,
 static void *ngx_kqueue_create_conf(ngx_cycle_t *cycle);
 static char *ngx_kqueue_init_conf(ngx_cycle_t *cycle, void *conf);
 
-
+// kq的实例
 int                    ngx_kqueue = -1;
-
+// 要注册到kq的变更事件
 static struct kevent  *change_list;
+// kq系统调用返回的就绪的事件
 static struct kevent  *event_list;
+/*
+ * nchanges 要注册的变更事件个数 change_list中事件数量
+ * nevents event_list数组长度 不是event_list中就绪事件的个数 比如数组长度10 其中放了5个就绪事件
+ */
 static ngx_uint_t      max_changes, nchanges, nevents;
 
 #ifdef EVFILT_USER
@@ -76,6 +83,7 @@ static ngx_command_t  ngx_kqueue_commands[] = {
 static ngx_event_module_t  ngx_kqueue_module_ctx = {
     &kqueue_name,
     ngx_kqueue_create_conf,                /* create configuration */
+    // 设置kq的changes和events默认值512
     ngx_kqueue_init_conf,                  /* init configuration */
 
     {
@@ -112,7 +120,19 @@ ngx_module_t  ngx_kqueue_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
+/*
+ * 初始化kq的时候根据模块需求 是不是需要高精度定时器 如果需要高精度定时器就借助kq的定时器事件实现
+ * @param timer ms时间 向kq注册个定时器事件 间隔就是这个时间 也就是每隔timer时间就有就绪事件到达 selector被唤醒
+ *              为什么设置这个参数 为了系统的效率 兼顾处理网络任务和普通任务
+ *              <ul>
+ *                <li>系统调用阻塞式 一直等到有事件就绪到达</li>
+ *                <li>发起系统调用时指定超时时间 确保不会一直陷入阻塞 这种方式的定时时间依赖<ul>
+ *                  <li>系统层面计算超时时间 准确度可能存在问题</li>
+ *                  <li>在发起调用时指定超时时间 这种方式的定时精度可能不够</li>
+ *                </ul></li>
+ *                <li>向kq注册定时器事件 这种定时精度高 本质就是高精度定时器</li>
+ *              </ul>
+ */
 static ngx_int_t
 ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 {
@@ -121,10 +141,17 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 #if (NGX_HAVE_TIMER_EVENT)
     struct kevent       kev;
 #endif
-
+    /*
+     * 设置kq的changes和events默认值512
+     * <ul>
+     *   <li>一次最多可以注册512个事件变更</li>
+     *   <li>一次最多可以接收512个就绪事件</li>
+     * </ul>
+     */
     kcf = ngx_event_get_conf(cycle->conf_ctx, ngx_kqueue_module);
 
     if (ngx_kqueue == -1) {
+        // 系统调用 实例化kq
         ngx_kqueue = kqueue();
 
         if (ngx_kqueue == -1) {
@@ -141,10 +168,11 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
     }
 
     if (max_changes < kcf->changes) {
+        // nchanges是要注册的变更事件个数 就是change_list长度
         if (nchanges) {
             ts.tv_sec = 0;
             ts.tv_nsec = 0;
-
+            // change_list中变更事件注册到kq
             if (kevent(ngx_kqueue, change_list, (int) nchanges, NULL, 0, &ts)
                 == -1)
             {
@@ -158,7 +186,7 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
         if (change_list) {
             ngx_free(change_list);
         }
-
+        // 上面释放了change_list数组的内存 现在重新分配数组内存 用来将来存放要变更的事件
         change_list = ngx_alloc(kcf->changes * sizeof(struct kevent),
                                 cycle->log);
         if (change_list == NULL) {
@@ -184,18 +212,28 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
                       |NGX_USE_VNODE_EVENT;
 
 #if (NGX_HAVE_TIMER_EVENT)
-
+    // 通过向kq注册定时器事件方式实现高精度定时器
     if (timer) {
         kev.ident = 0;
+        // 表明注册的事件类型是定时器事件 不是读写事件 kq会在设定的时间间隔触发这个事件
         kev.filter = EVFILT_TIMER;
+        /*
+         * 两个作用
+         * <ul>
+         *   <li>ADD表明向kq注册新事件 如果kq中已经存在这个事件就更新</li>
+         *   <li>ENABLE表明启用这个事件 让它开始工作</li>
+         * </ul>
+         */
         kev.flags = EV_ADD|EV_ENABLE;
+        // 定时器不需要子标志
         kev.fflags = 0;
+        // 间隔时间 ms
         kev.data = timer;
         kev.udata = 0;
 
         ts.tv_sec = 0;
         ts.tv_nsec = 0;
-
+        // 向kq注册定时器
         if (kevent(ngx_kqueue, &kev, 1, NULL, 0, &ts) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                           "kevent(EVFILT_TIMER) failed");
@@ -392,6 +430,7 @@ ngx_kqueue_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
 static ngx_int_t
 ngx_kqueue_set_event(ngx_event_t *ev, ngx_int_t filter, ngx_uint_t flags)
 {
+    // kq的事件体 在udata阈上存放的是nginx封装的事件体
     struct kevent     *kev;
     struct timespec    ts;
     ngx_connection_t  *c;
@@ -424,6 +463,21 @@ ngx_kqueue_set_event(ngx_event_t *ev, ngx_int_t filter, ngx_uint_t flags)
     kev->ident = c->fd;
     kev->filter = (short) filter;
     kev->flags = (u_short) flags;
+    /*
+     * 这个地方的设计是用来防事件过期的校验
+     * udata存的是一个nginx封装的事件的伪地址 包括两部分信息
+     * <ul>
+     *   <li>nginx事件的真实地址信息</li>
+     *   <li>事件伪触发过期的校验码</li>
+     * </ul>
+     * 首先关于地址对齐
+     * <ul>
+     *   <li>64位架构是8Byte对齐 地址低3位是0</li>
+     *   <li>32位架构是4Byte对齐 地址低2位是0</li>
+     * </ul>
+     * 也就是说指针的最低位是没有用了 可以复用 只要在解引用的时候还原成0就行了
+     * 那么就可以在指针的最低位放上版本号
+     */
     kev->udata = NGX_KQUEUE_UDATA_T ((uintptr_t) ev | ev->instance);
 
     if (filter == EVFILT_VNODE) {
@@ -493,7 +547,18 @@ ngx_kqueue_notify(ngx_event_handler_pt handler)
 
 #endif
 
-
+/**
+ * 发起一次kq系统调用看看有没有就绪的事件
+ * @param cycle
+ * @param timer 定时器 selector系统调用涉及阻塞 系统提供的API带超时 指定系统调用的超时时间ms
+ *              <ul>定时器有2种实现方式
+ *                <li>1是借助系统调用超时机制</li>
+ *                <li>2是借助kq的定时器事件 这种定时器是高精度定时器</li>
+ *              </ul>
+ *              定时器的作用是周期性更新系统时间
+ * @param flags
+ * @return
+ */
 static ngx_int_t
 ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
     ngx_uint_t flags)
@@ -510,10 +575,11 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
     nchanges = 0;
 
     if (timer == NGX_TIMER_INFINITE) {
+        // 这个标识说明定时器用的是高精度定时器机制
         tp = NULL;
 
     } else {
-
+        // 设置了明确的复用器调用超时时间 通过系统调用超时非阻塞方式达到定时器机制
         ts.tv_sec = timer / 1000;
         ts.tv_nsec = (timer % 1000) * 1000000;
 
@@ -532,7 +598,15 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "kevent timer: %M, changes: %d", timer, n);
-
+    /*
+     * @param ngx_kqueue kq实例
+     * @param tp 系统调用的超时设置 没有事件到达唤醒线程 就阻塞到这个时间后唤醒线程不要一直阻塞
+     *           <ul>
+     *             <li>有值 超时唤醒</li>
+     *             <li>没值 用kq定时器事件 配置kq实例化时注册定时器事件</li>
+     *           </ul>
+     * @return events 就绪事件数量
+     */
     events = kevent(ngx_kqueue, change_list, n, event_list, (int) nevents, tp);
 
     err = (events == -1) ? ngx_errno : 0;
@@ -564,6 +638,7 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
 
     if (events == 0) {
         if (timer != NGX_TIMER_INFINITE) {
+            // 就绪事件0个 系统调用为什么会返回 肯定是系统调用超时时间到了
             return NGX_OK;
         }
 
@@ -571,7 +646,7 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
                       "kevent() returned no events without timeout");
         return NGX_ERROR;
     }
-
+    // 遍历就绪事件 分门别类放到任务队列中等待处理
     for (i = 0; i < events; i++) {
 
         ngx_kqueue_dump_event(cycle->log, &event_list[i]);
@@ -586,7 +661,9 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
 
 #if (NGX_HAVE_TIMER_EVENT)
 
+        // 就绪的事件是个定时器事件 借助这个事件更新系统时间 等会函数调用方的主线程要触发定时任务执行 依赖更新过后的系统时间来判断任务是否到期
         if (event_list[i].filter == EVFILT_TIMER) {
+            // 更新系统时间
             ngx_time_update();
             continue;
         }
@@ -594,17 +671,34 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
 #endif
 
         ev = (ngx_event_t *) event_list[i].udata;
-
+        // 就绪事件类型
         switch (event_list[i].filter) {
 
-        case EVFILT_READ:
-        case EVFILT_WRITE:
-
+        case EVFILT_READ: // 可读
+        case EVFILT_WRITE: // 可写
+            /*
+             * 读写事件的处理
+             * <ul>
+             *   <li>可读的触发条件
+             *     <ul>
+             *       <li>socket中有数据没有被读取</li>
+             *       <li>文件 设备准备好可以读取</li>
+             *       <li>连接被关闭 连接被关闭的时候会返回事件可读并且可读的data长度是0</li>
+             *     </ul>
+             *   </li>
+             *   <li>可写的触发条件
+             *     <ul>
+             *       <li>socket写缓冲区中有数据</li>
+             *       <li>文件描述符已就绪可写 但不表示对方一定能收完数据</li>
+             *     </ul>
+             *   </li>
+             * </ul>
+             */
             instance = (uintptr_t) ev & 1;
             ev = (ngx_event_t *) ((uintptr_t) ev & (uintptr_t) ~1);
 
             if (ev->closed || ev->instance != instance) {
-
+                // 解决事件伪触发问题的体现
                 /*
                  * the stale event from a file descriptor
                  * that was just closed in this iteration
@@ -634,19 +728,19 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
 
             break;
 
-        case EVFILT_VNODE:
+        case EVFILT_VNODE: // 监听文件变化 监听文件或目录的变化(某个文件是否被修改 删除 重命名)
             ev->kq_vnode = 1;
 
             break;
 
-        case EVFILT_AIO:
+        case EVFILT_AIO: // 异步IO完成通知
             ev->complete = 1;
             ev->ready = 1;
 
             break;
 
 #ifdef EVFILT_USER
-        case EVFILT_USER:
+        case EVFILT_USER: // 用户自定义触发事件
             break;
 #endif
 
@@ -658,14 +752,31 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
         }
 
         if (flags & NGX_POST_EVENTS) {
+            /*
+             * 为什么要分开 因为这两类事件的处理场景 优先级 调度策略都不同
+             * <ul>
+             *   <li>ev->accept==1 新连接事件 投递到ngx_posted_accept_events队列</li>
+             *   <li>已有连接上的读写 投递到ngx_posted_events队列</li>
+             * </ul>
+             * 为什么要分开处理
+             * <ul>
+             *   <li>Accept事件处理通常更轻 但更频繁 Accept事件只需要调用accept()接收新连接 然后创建连接结构体 这一步很快 但在高并发场景中非常频繁 如果和业务请求混在一起处理 可能会导致请求被延迟处理 所以优先或独立处理accept 可以提升请求接收效率</li>
+             *   <li>防止惊群效应 Nginx多进程时 每个进程都可能监听相同的端口 如果同时处理accept和业务事件 很容易导致惊群 通过单独调度ngx_posted_accept_events 可以设置为只有一个进程处理accept 其余进程处理业务 提高负载均衡效果</li>
+             *   <li>便于定制不同的处理策略 分开队列就能做到<ul>
+             *     <li>accept队列 可以批量处理多个连接再处理请求</li>
+             *     <li>普通事件队列 按照负载控制 节流处理业务请求</li>
+             *   </ul></li>
+             * </ul>
+             * Nginx甚至可以配置multi_accept 一次处理多个accept事件 这种策略就只对ngx_posted_accept_events起作用
+             */
             queue = ev->accept ? &ngx_posted_accept_events
                                : &ngx_posted_events;
-
+            // 事件投递到队列
             ngx_post_event(ev, queue);
 
             continue;
         }
-
+        // 默认情况下都是把就绪事件入队处理 不是同步处理 因此不会执行到这
         ev->handler(ev);
     }
 
@@ -709,12 +820,14 @@ ngx_kqueue_create_conf(ngx_cycle_t *cycle)
     return kcf;
 }
 
-
+/*
+ * kq的changes和events默认值设置
+ */
 static char *
 ngx_kqueue_init_conf(ngx_cycle_t *cycle, void *conf)
 {
     ngx_kqueue_conf_t *kcf = conf;
-
+    // changes和events没有设置就给定默认值512
     ngx_conf_init_uint_value(kcf->changes, 512);
     ngx_conf_init_uint_value(kcf->events, 512);
 

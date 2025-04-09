@@ -20,9 +20,12 @@ typedef struct {
 #endif
 } ngx_shmtx_sh_t;
 
-
+/*
+ * 互斥锁
+ */
 typedef struct {
 #if (NGX_HAVE_ATOMIC_OPS)
+    // 指向共享内存中的锁
     ngx_atomic_t  *lock;
 #if (NGX_HAVE_POSIX_SEM)
     ngx_atomic_t  *wait;
@@ -33,6 +36,7 @@ typedef struct {
     ngx_fd_t       fd;
     u_char        *name;
 #endif
+    // 自旋锁的次数  (ngx_uint_t) -1表示不使用自旋锁
     ngx_uint_t     spin;
 } ngx_shmtx_t;
 

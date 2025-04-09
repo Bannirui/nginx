@@ -188,6 +188,9 @@ char *ngx_conf_check_num_bounds(ngx_conf_t *cf, void *post, void *data);
         conf = default;                                                      \
     }
 
+/*
+ * 给配置conf上默认值
+ */
 #define ngx_conf_init_uint_value(conf, default)                              \
     if (conf == NGX_CONF_UNSET_UINT) {                                       \
         conf = default;                                                      \

@@ -228,34 +228,38 @@
  * 为nginx模块抽象出来的封装
  */
 struct ngx_module_s {
+    // 区分同类型模块下面有多个
     ngx_uint_t            ctx_index;
-    // 模块的编号 0-based
+    // 模块的编号 0-based 模块的唯一标识符
     ngx_uint_t            index;
     // 模块名称
     char                 *name;
 
     ngx_uint_t            spare0;
     ngx_uint_t            spare1;
-
+    // 模块版本
     ngx_uint_t            version;
     const char           *signature;
-
+    // 模块上下文
     void                 *ctx;
+    // 模块支持的命令集
     ngx_command_t        *commands;
+    // 模块类型
     ngx_uint_t            type;
-
+    // 回调函数 主进程初始化时候调用
     ngx_int_t           (*init_master)(ngx_log_t *log);
 
-    /**
-     * 回调方法 用来初始化每个模块
-     */
+    // 回调函数 模块初始化时候调用 全局初始化的时候调用为模块准备模块的全局资源和配置
     ngx_int_t           (*init_module)(ngx_cycle_t *cycle);
-
+    // 回调函数 工作进程初始化时候调用 与模块相关的初始化工作
     ngx_int_t           (*init_process)(ngx_cycle_t *cycle);
+    // 回调函数 线程初始化时候调用
     ngx_int_t           (*init_thread)(ngx_cycle_t *cycle);
+    // 回调函数 线程退出时候调用
     void                (*exit_thread)(ngx_cycle_t *cycle);
+    // 回调函数 工作进程退出时候调用
     void                (*exit_process)(ngx_cycle_t *cycle);
-
+    // 回调函数 工作进程退出时候调用
     void                (*exit_master)(ngx_cycle_t *cycle);
 
     uintptr_t             spare_hook0;
@@ -268,7 +272,9 @@ struct ngx_module_s {
     uintptr_t             spare_hook7;
 };
 
-
+/*
+ * 核心模块
+ */
 typedef struct {
     ngx_str_t             name;
     void               *(*create_conf)(ngx_cycle_t *cycle);

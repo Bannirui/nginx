@@ -37,7 +37,7 @@ struct ngx_list_part_s {
  * </ul>
  */
 typedef struct {
-    // 单链表的尾节点 为什么要维护尾节点呢 用头插就行了
+    // 单链表的尾节点 为什么要维护尾节点呢 用头插就行
     ngx_list_part_t  *last;
     // 单链表的头节点
     ngx_list_part_t   part;

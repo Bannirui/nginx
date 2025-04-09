@@ -16,7 +16,7 @@
 typedef struct ngx_queue_s  ngx_queue_t;
 
 /*
- * 双链表
+ * 双链表实现的队列
  */
 struct ngx_queue_s {
     // 前驱

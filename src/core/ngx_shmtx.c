@@ -14,16 +14,28 @@
 
 static void ngx_shmtx_wakeup(ngx_shmtx_t *mtx);
 
-
+/*
+ * share mutex
+ * 创建共享互斥锁
+ * <ul>
+ *   <li>互斥锁的锁地址</li>
+ *   <li>是不是自旋锁以及自旋次数</li>
+ * </ul>
+ * @param mtx 互斥锁
+ * @param addr 共享内存锁的地址
+ * @return 操作状态码
+ */
 ngx_int_t
 ngx_shmtx_create(ngx_shmtx_t *mtx, ngx_shmtx_sh_t *addr, u_char *name)
 {
+    // 互斥锁的锁地址
     mtx->lock = &addr->lock;
 
     if (mtx->spin == (ngx_uint_t) -1) {
+        // 表示不使用自旋锁
         return NGX_OK;
     }
-
+    // 使用自旋锁 设置自旋次数
     mtx->spin = 2048;
 
 #if (NGX_HAVE_POSIX_SEM)

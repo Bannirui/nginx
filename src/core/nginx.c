@@ -156,14 +156,17 @@ static ngx_command_t  ngx_core_commands[] = {
       ngx_null_command
 };
 
-
+// 核心模块上下文
 static ngx_core_module_t  ngx_core_module_ctx = {
+    // 名称
     ngx_string("core"),
+    // 模块有单独配置 分配内存留给配置使用
     ngx_core_module_create_conf,
+    // 模块单独配置初始化
     ngx_core_module_init_conf
 };
 
-
+// 核心模块
 ngx_module_t  ngx_core_module = {
     NGX_MODULE_V1,
     &ngx_core_module_ctx,                  /* module context */
@@ -286,7 +289,7 @@ main(int argc, char *const *argv)
     if (ngx_add_inherited_sockets(&init_cycle) != NGX_OK) {
         return 1;
     }
-
+    // 给启用的模块编上号
     if (ngx_preinit_modules() != NGX_OK) {
         return 1;
     }
@@ -377,11 +380,13 @@ main(int argc, char *const *argv)
     }
 
     ngx_use_stderr = 0;
-
+    // nginx单进程或者多进程模式下有不同的事件模式
     if (ngx_process == NGX_PROCESS_SINGLE) {
+        // 单进程模式
         ngx_single_process_cycle(cycle);
 
     } else {
+        // 多进程模式
         ngx_master_process_cycle(cycle);
     }
 
@@ -1105,7 +1110,9 @@ ngx_process_options(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*
+ * 核心模块需要单独的配置 开辟内存进行存放配置
+ */
 static void *
 ngx_core_module_create_conf(ngx_cycle_t *cycle)
 {
@@ -1150,7 +1157,9 @@ ngx_core_module_create_conf(ngx_cycle_t *cycle)
     return ccf;
 }
 
-
+/*
+ * 初始化核心模块配置
+ */
 static char *
 ngx_core_module_init_conf(ngx_cycle_t *cycle, void *conf)
 {

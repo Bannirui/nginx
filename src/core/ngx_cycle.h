@@ -39,6 +39,10 @@ struct ngx_shm_zone_s {
  * nginx的全局变量
  */
 struct ngx_cycle_s {
+    /*
+     * 存放各个模块的配置
+     * 按照模块的index编号作为数组脚标
+     */
     void                  ****conf_ctx;
 	// 内存池 nginx的所有内存都从这个内存池开辟 初始大小16KB
     ngx_pool_t               *pool;
@@ -51,8 +55,9 @@ struct ngx_cycle_s {
     ngx_connection_t        **files;
     ngx_connection_t         *free_connections;
     ngx_uint_t                free_connection_n;
-    // 存放nginx中所有的模块
+    // nginx启用的模块
     ngx_module_t            **modules;
+    // 启用的模块数量
     ngx_uint_t                modules_n;
     ngx_uint_t                modules_used;    /* unsigned  modules_used:1; */
 
@@ -68,8 +73,11 @@ struct ngx_cycle_s {
     ngx_array_t               config_dump;
     ngx_rbtree_t              config_dump_rbtree;
     ngx_rbtree_node_t         config_dump_sentinel;
-
+    // 单链表
     ngx_list_t                open_files;
+    /*
+     * 共享内存 用单链表组织
+     */
     ngx_list_t                shared_memory;
 
     ngx_uint_t                connection_n;
@@ -78,13 +86,14 @@ struct ngx_cycle_s {
     ngx_connection_t         *connections;
     ngx_event_t              *read_events;
     ngx_event_t              *write_events;
-
+    // 老周期的全局变量 新周期的全局变量会从老周期复制过来
     ngx_cycle_t              *old_cycle;
     // 配置文件路径
     ngx_str_t                 conf_file;
     // nginx -g指定的配置参数 字符串
     ngx_str_t                 conf_param;
     ngx_str_t                 conf_prefix;
+    // /usr/local/nginx 安装目录
     ngx_str_t                 prefix;
     ngx_str_t                 error_log;
     ngx_str_t                 lock_file;
@@ -95,7 +104,7 @@ struct ngx_cycle_s {
 typedef struct {
     ngx_flag_t                daemon;
     ngx_flag_t                master;
-
+    // 事件模块的时间精度 单位毫秒
     ngx_msec_t                timer_resolution;
     ngx_msec_t                shutdown_timeout;
 

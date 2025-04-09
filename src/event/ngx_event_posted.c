@@ -9,9 +9,17 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 
-
+// 存放网络accept事件 监听端口的新连接事件
 ngx_queue_t  ngx_posted_accept_events;
+/**
+* 当某个事件触发后 Nginx可能不是马上处理它 而是判断当前负载 连接状态等条件
+* <ul>
+*   <li>如果当前不适合处理 就把它放入ngx_posted_next_events</li>
+*   <li>等到下一轮事件循环再处理它</li>
+* </ul>
+ */
 ngx_queue_t  ngx_posted_next_events;
+// 存放网络IO的普通事件也就是是网络IO的读写事件
 ngx_queue_t  ngx_posted_events;
 
 

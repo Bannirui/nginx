@@ -23,7 +23,7 @@ ngx_uint_t         ngx_max_module;
 static ngx_uint_t  ngx_modules_n;
 
 /*
- * 遍历模块
+ * 遍历要启用的模块
  * <ul>
  *   <li>给模块编上号</li>
  *   <li>模块名称</li>
@@ -49,7 +49,7 @@ ngx_preinit_modules(void)
 }
 
 /**
- * 把所有的模块元信息放到全局变量中
+ * 把启用的模块放到全局变量中
  */
 ngx_int_t
 ngx_cycle_modules(ngx_cycle_t *cycle)
@@ -64,16 +64,26 @@ ngx_cycle_modules(ngx_cycle_t *cycle)
     if (cycle->modules == NULL) {
         return NGX_ERROR;
     }
-    // 初始化nginx所有的模块信息 51个模块
+    // 初始化nginx启用的模块信息 编译时决定要开启的模块信息都放到全局变量
     ngx_memcpy(cycle->modules, ngx_modules,
                ngx_modules_n * sizeof(ngx_module_t *));
-    // nginx的所有的模块数量
+    // nginx启用的模块数量
     cycle->modules_n = ngx_modules_n;
 
     return NGX_OK;
 }
 
-// 遍历所有模块 回调每个模块的init_module方法进行初始化
+/**
+ * 遍历所有模块 回调每个模块的init_module方法进行初始化
+ * 所有的模块 ngx_modules
+ * 哪些模块有init_module方法呢
+ * <ul>
+ *   <li>ngx_regex_module 有</li>
+ *   <li>ngx_event_core_module 有</li>
+ * </ul>
+ * @param cycle
+ * @return
+ */
 ngx_int_t
 ngx_init_modules(ngx_cycle_t *cycle)
 {
@@ -91,7 +101,7 @@ ngx_init_modules(ngx_cycle_t *cycle)
 }
 
 /*
- *
+ * 统计每种模块类型下有多少个模块
  * @param type 模块类型标识 HTTP模块 EVENT模块 MAIL模块
  */
 ngx_int_t

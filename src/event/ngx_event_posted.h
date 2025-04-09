@@ -13,7 +13,14 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 
-
+/*
+ * selector就绪事件入队 等待被处理
+ * 通过事件的posted标识保证不会重复投递
+ * @param ev 事件 可能是IO的连接事件 也可能是IO的读写事件
+ * @param q 事件的缓冲队列
+ *          连接事件的队列是ngx_posted_accept_events
+ *          读写事件的队列是ngx_posted_events;
+ */
 #define ngx_post_event(ev, q)                                                 \
                                                                               \
     if (!(ev)->posted) {                                                      \

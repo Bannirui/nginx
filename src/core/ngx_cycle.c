@@ -35,6 +35,7 @@ static ngx_connection_t  dumb;
 /* STUB */
 
 /**
+ *
  * @return 全局变量 nginx生命周期的变量都在这
  */
 ngx_cycle_t *
@@ -73,17 +74,18 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
         return NULL;
     }
     pool->log = log;
-
+    // 新周期的配置 将老周期的配置拷贝过来
     cycle = ngx_pcalloc(pool, sizeof(ngx_cycle_t));
     if (cycle == NULL) {
         ngx_destroy_pool(pool);
         return NULL;
     }
-
+    // 用来存放全局变量的内存池
     cycle->pool = pool;
     cycle->log = log;
+    // 老周期的全局变量
     cycle->old_cycle = old_cycle;
-
+    // 配置文件 /usr/local/nginx/conf/nginx.conf
     cycle->conf_prefix.len = old_cycle->conf_prefix.len;
     cycle->conf_prefix.data = ngx_pstrdup(pool, &old_cycle->conf_prefix);
     if (cycle->conf_prefix.data == NULL) {
@@ -91,22 +93,24 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
         return NULL;
     }
 
+    // nginx的安装目录
     cycle->prefix.len = old_cycle->prefix.len;
     cycle->prefix.data = ngx_pstrdup(pool, &old_cycle->prefix);
     if (cycle->prefix.data == NULL) {
         ngx_destroy_pool(pool);
         return NULL;
     }
-
+    // error日志 logs/error.log
     cycle->error_log.len = old_cycle->error_log.len;
     cycle->error_log.data = ngx_pnalloc(pool, old_cycle->error_log.len + 1);
     if (cycle->error_log.data == NULL) {
         ngx_destroy_pool(pool);
         return NULL;
     }
+    // 字符串复制
     ngx_cpystrn(cycle->error_log.data, old_cycle->error_log.data,
                 old_cycle->error_log.len + 1);
-
+    // 配置文件 /usr/local/nginx/conf/nginx.conf
     cycle->conf_file.len = old_cycle->conf_file.len;
     cycle->conf_file.data = ngx_pnalloc(pool, old_cycle->conf_file.len + 1);
     if (cycle->conf_file.data == NULL) {
@@ -115,7 +119,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
     ngx_cpystrn(cycle->conf_file.data, old_cycle->conf_file.data,
                 old_cycle->conf_file.len + 1);
-
+    // nginx -g指定的配置参数
     cycle->conf_param.len = old_cycle->conf_param.len;
     cycle->conf_param.data = ngx_pstrdup(pool, &old_cycle->conf_param);
     if (cycle->conf_param.data == NULL) {
@@ -125,7 +129,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
 
     n = old_cycle->paths.nelts ? old_cycle->paths.nelts : 10;
-
+    // 开辟数组
     if (ngx_array_init(&cycle->paths, pool, n, sizeof(ngx_path_t *))
         != NGX_OK)
     {
@@ -196,7 +200,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
     ngx_queue_init(&cycle->reusable_connections_queue);
 
-
+    // 所有模块的配置都放到数组里面 按模块编号区分
     cycle->conf_ctx = ngx_pcalloc(pool, ngx_max_module * sizeof(void *));
     if (cycle->conf_ctx == NULL) {
         ngx_destroy_pool(pool);
@@ -223,22 +227,22 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
     ngx_strlow(cycle->hostname.data, (u_char *) hostname, cycle->hostname.len);
 
-    // 把所有的信息元信息放到全局变量中
+    // 把启用的模块信息放到全局变量中 之后可以拿到关于模块的任何信息
     if (ngx_cycle_modules(cycle) != NGX_OK) {
         ngx_destroy_pool(pool);
         return NULL;
     }
 
     /*
-     * 处理核心模块
+     * 处理核心模块 ngx_core_module_t
      */
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->type != NGX_CORE_MODULE) {
             continue;
         }
-
+        // 核心模块的上下文
         module = cycle->modules[i]->ctx;
-
+        // 核心模块的配置开辟好准备存放配置
         if (module->create_conf) {
             rv = module->create_conf(cycle);
             if (rv == NULL) {
@@ -304,7 +308,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
         }
 
         module = cycle->modules[i]->ctx;
-
+        // 解析出核心模块需要的配置
         if (module->init_conf) {
             if (module->init_conf(cycle,
                                   cycle->conf_ctx[cycle->modules[i]->index])
@@ -417,22 +421,33 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
 
     /* create shared memory */
-
+    // 共享内存用单链表组织 拿到单链表的头节点
     part = &cycle->shared_memory.part;
+    // 头节点上的共享内存
     shm_zone = part->elts;
-
+    /*
+     * 共享内存用单链表形式组织
+     * <ul>
+     *   <li>一个单链表有多个链表节点</li>
+     *   <li>每个链表节点上存放了共享内存数组</li>
+     * </ul>
+     */
     for (i = 0; /* void */ ; i++) {
 
         if (i >= part->nelts) {
+            // 单链表节点上的共享内存已经遍历结束 开始遍历链表后继节点上的共享内存
             if (part->next == NULL) {
                 break;
             }
+            // 链表节点的后继节点
             part = part->next;
+            // 链表新节点上的共享内存 继续遍历新链表节点上的共享内存
             shm_zone = part->elts;
             i = 0;
         }
 
         if (shm_zone[i].shm.size == 0) {
+            // 共享内存大小是0
             ngx_log_error(NGX_LOG_EMERG, log, 0,
                           "zero size shared memory zone \"%V\"",
                           &shm_zone[i].shm.name);
@@ -643,7 +658,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
     pool->log = cycle->log;
-    // 初始化模块
+    // 初始化启用的所有模块
     if (ngx_init_modules(cycle) != NGX_OK) {
         /* fatal */
         exit(1);

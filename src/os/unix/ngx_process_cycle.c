@@ -69,7 +69,9 @@ static ngx_cycle_t      ngx_exit_cycle;
 static ngx_log_t        ngx_exit_log;
 static ngx_open_file_t  ngx_exit_log_file;
 
-
+/**
+ * nginx以多进程模式启动时候的事件模型
+ */
 void
 ngx_master_process_cycle(ngx_cycle_t *cycle)
 {
@@ -274,7 +276,9 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     }
 }
 
-
+/**
+ * nginx以单进程模式启动时候的事件模型
+ */
 void
 ngx_single_process_cycle(ngx_cycle_t *cycle)
 {
@@ -287,16 +291,19 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
 
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->init_process) {
+            /*
+             * 这个地方会回调到ngx_event的init_process函数 在nginx工作进程启动后 为事件模块的循环事件做初始化工作 下面再启动事件循环
+             */
             if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {
                 /* fatal */
                 exit(2);
             }
         }
     }
-
+    // 启动事件循环
     for ( ;; ) {
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "worker cycle");
-
+        // 每一次事件循环的处理
         ngx_process_events_and_timers(cycle);
 
         if (ngx_terminate || ngx_quit) {
@@ -694,7 +701,9 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
     exit(0);
 }
 
-
+/*
+ *
+ */
 static void
 ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 {
@@ -702,11 +711,17 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 
     ngx_process = NGX_PROCESS_WORKER;
     ngx_worker = worker;
-
+    // 设置进程标题
     ngx_worker_process_init(cycle, worker);
 
     ngx_setproctitle("worker process");
-
+    /*
+     * 事件循环
+     * <ul>
+     *   <li>接收请求</li>
+     *   <li>处理任务</li>
+     * </ul>
+     */
     for ( ;; ) {
 
         if (ngx_exiting) {
@@ -748,7 +763,9 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
     }
 }
 
-
+/*
+ * 初始化工作进程
+ */
 static void
 ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
 {
@@ -887,7 +904,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
 
     tp = ngx_timeofday();
     srandom(((unsigned) ngx_pid << 16) ^ tp->sec ^ tp->msec);
-
+    // 初始化完了工作进程 回调模块
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->init_process) {
             if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {

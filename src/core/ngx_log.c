@@ -43,7 +43,9 @@ static ngx_command_t  ngx_errlog_commands[] = {
       ngx_null_command
 };
 
-
+/*
+ * 核心模块的上下文
+ */
 static ngx_core_module_t  ngx_errlog_module_ctx = {
     ngx_string("errlog"),
     NULL,

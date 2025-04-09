@@ -26,15 +26,43 @@ typedef struct {
 
 #endif
 
-
 struct ngx_event_s {
     void            *data;
-
+    // 标识当前事件是不是写事件
     unsigned         write:1;
-
+    /*
+     * 标识当前事件是不是监听socket的accept事件
+     * 为什么需要这个位域标识
+     * 它的作用是
+     * <ul>
+     *   <li>事件触发时快速判断是不是要调用accept系统调用来接收一个新的连接</li>
+     *   <li>还是处理已有连接上的读写事件</li>
+     * </ul>
+     */
     unsigned         accept:1;
 
     /* used to detect the stale events in kqueue and epoll */
+    /*
+     * 专门用来解决epoll\kq的selector伪触发问题
+     * <ul>
+     *   <li>Java中经典bug</li>
+     *   <li>Netty中优化方案计数判断</li>
+     * </ul>
+     * 机制的设计原理
+     * <ul>
+     *   <li>每次事件注册时 把instance与ngx_connection_t的instance位绑定</li>
+     *   <li>事件触发时检查两者是否一致<ul>
+     *     <li>若一致 说明是真事件 继续处理</li>
+     *     <li>若不一致 说明是stale事件 直接丢弃</li>
+     *   </ul></li>
+     * </ul>
+     * 非常牛的设计 仅仅用1位位运算就解决了事件有效性检测
+     * 这个值要么是0要么是1 当事件释放或者注册时对这个版本进行翻转 将来事件就绪时进行校验达到初步的事件有效性校验 这个校验不是绝对校验
+     * <ul>
+     *   <li>翻转版本的校验已经可以挡掉很多我过期事件</li>
+     *   <li>后面再配合对事件其他属性的校验</li>
+     * </ul>
+     */
     unsigned         instance:1;
 
     /*
@@ -65,7 +93,10 @@ struct ngx_event_s {
 
     /* the pending eof reported by kqueue, epoll or in aio chain operation */
     unsigned         pending_eof:1;
-
+    /*
+     * 所有的事件都不是立即处理 都是先放到缓存队列中
+     * 这个位域标识事件已经被投递过队列 用来防止事件的重复投递
+     */
     unsigned         posted:1;
 
     unsigned         closed:1;
@@ -110,7 +141,10 @@ struct ngx_event_s {
     ngx_uint_t       index;
 
     ngx_log_t       *log;
-
+    /*
+     * 事件中维护成员标识定时器 也就是当前这个任务需要啥时候执行 这个信息维护在任务队列中(队列用红黑树实现 任务的超时时间就是排序权重值)
+     * 将来只要从红黑树树中拿到这个timer指针 向前偏移对应的偏移量就能找到当前这个事件的地址
+     */
     ngx_rbtree_node_t   timer;
 
     /* the posted queue */
@@ -431,6 +465,7 @@ typedef struct {
     ngx_uint_t    use;
 
     ngx_flag_t    multi_accept;
+    // 多进程模式下是不是要开启竞争接收 防止多个进程监听在同一个端口收到同一个连接
     ngx_flag_t    accept_mutex;
 
     ngx_msec_t    accept_mutex_delay;

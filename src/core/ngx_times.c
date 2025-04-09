@@ -25,9 +25,17 @@ static ngx_msec_t ngx_monotonic_time(time_t sec, ngx_uint_t msec);
 
 static ngx_uint_t        slot;
 static ngx_atomic_t      ngx_time_lock;
-
+/*
+ * 缓存的系统时间 格式是毫秒时间戳
+ * 为什么下面的ngx_cached_time要用环形设计 而这个系统时间不需要环形设计而只要一个变量
+ * <ul>
+ *   <li>首先ngx_current_msec是个毫秒时间戳 就是个整数 而ngx_cached_time是结构化的时间 有多个结构体成员</li>
+ *   <li>其次系统对于long读写是原子的 不存在并发不安全问题</li>
+ * </ul>
+ * 判断定时任务是不是过期仅仅需要一个时间戳就行 不需要结构化时间
+ */
 volatile ngx_msec_t      ngx_current_msec;
-// 全局指针 指向的cached_time数组
+// 全局指针 指向的cached_time数组 环形缓冲区缓存的系统时间 格式是毫秒时间戳
 volatile ngx_time_t     *ngx_cached_time;
 volatile ngx_str_t       ngx_cached_err_log_time;
 volatile ngx_str_t       ngx_cached_http_time;
@@ -45,7 +53,22 @@ volatile ngx_str_t       ngx_cached_syslog_time;
 
 static ngx_int_t         cached_gmtoff;
 #endif
-// 缓存时间 减少系统调用 数组长度通过宏NGX_TIME_SLOTS控制 长度64
+/*
+ * 系统时间缓冲区
+ * 缓存时间 减少系统调用 数组长度通过宏NGX_TIME_SLOTS控制 长度64
+ * 首先为什么把缓冲区设计成环形 这样设计的目的是为了保证有锁单线程写 无锁多进程读
+ * 既然环形的设计目的是为了解耦读写操作 那么是不是只要保证缓冲区大小是2就行 写操作一直在两个位置轮流交替
+ * 长度2不是不可以但是存在的隐患是读时被写覆盖
+ * 假设A在读系统时间 拿到的指针是1
+ * 在A磁期间B发生了多次对系统时间的更新
+ *   - B更新系统时间 指针1
+ *   - B更新系统时间 指针2
+ *   - B更新系统时间 指针1
+ *   - ...
+ * 也就是意味着A使用的系统时间已经发生了更新 原来的值被覆盖了 这种场景可能导致误判
+ * 所以本质问题就是最好留给更新操作多点时间缓冲 用空间来换 只要环形缓冲区大一点 就足够避免上面的事情发生
+ * 可能这就是作者设计缓冲区默认长度64的原因
+ */
 static ngx_time_t        cached_time[NGX_TIME_SLOTS];
 static u_char            cached_err_log_time[NGX_TIME_SLOTS]
                                     [sizeof("1970/09/28 12:00:00")];
@@ -78,8 +101,20 @@ ngx_time_init(void)
 }
 
 /**
- * 更新时间
- * 加锁防止并发操作污染共享资源
+ * 更新系统时间 更新两个地方
+ * <ul>
+ *   <li>ngx_current_msec 时间戳格式 单个变量</li>
+ *   <li>cached_time 结构化格式 环形缓冲区</li>
+ * </ul>
+ * 这个函数的作用是啥 缓存一个全局的系统时间作为当前时间
+ * 为什么这么做呢 因为对于高性能服务器如果每次都调用gettimeofday会严重影响性能
+ * 什么时机才会调用这个方法更新系统时间呢
+ * <ul>
+ *   <li>每次事件循环时</li>
+ *   <li>使用高精度定时器时 kqueue/epoll返回前或后</li>
+ *   <li>写日志时</li>
+ *   <li>输出HTTP时间头</li>
+ * </ul>
  */
 void
 ngx_time_update(void)
@@ -99,9 +134,9 @@ ngx_time_update(void)
 
     sec = tv.tv_sec;
     msec = tv.tv_usec / 1000;
-
+    // 更新缓存的系统时间 时间戳格式
     ngx_current_msec = ngx_monotonic_time(sec, msec);
-    // 缓存当前系统时间
+    // 更新缓存的系统时间 结构化格式
     tp = &cached_time[slot];
 
     if (tp->sec == sec) {

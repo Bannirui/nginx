@@ -13,7 +13,10 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 
-
+/*
+ * ngx_msec_t是一个毫秒单位的类型 它的取值范围可以表示从0到几千年甚至更长的时间
+ * 通过ngx_msec_t-1来表示无限 确保定时器永远不会到期
+ */
 #define NGX_TIMER_INFINITE  (ngx_msec_t) -1
 
 #define NGX_TIMER_LAZY_DELAY  300

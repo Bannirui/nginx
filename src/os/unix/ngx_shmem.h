@@ -12,12 +12,19 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-
+/*
+ * shared memory 共享内存管理
+ * 用于分配 管理 跟踪共享内存
+ */
 typedef struct {
+    // 共享内存的起始地址
     u_char      *addr;
+    // 共享内存的大小
     size_t       size;
+    // 共享内存的名称
     ngx_str_t    name;
     ngx_log_t   *log;
+    // 是否已经存在
     ngx_uint_t   exists;   /* unsigned  exists:1;  */
 } ngx_shm_t;
 
