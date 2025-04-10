@@ -694,11 +694,41 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
              *   </li>
              * </ul>
              */
+            /*
+             * 伪事件的防御设计
+             * 在复用器kq的udata中存放的是一个变种地址
+             * <ul>
+             *   <li>指针后3位是0</li>
+             *   <li>最低位被放上了翻转版本号</li>
+             * </ul>
+             * 所以拿到内核返回的udata
+             * <ul>
+             *   <li>只要把最低位抹成0就是真正的用户事件地址</li>
+             *   <li>只解析最低位的1bit就是翻转版本号 防伪码</li>
+             * </ul>
+             */
             instance = (uintptr_t) ev & 1;
             ev = (ngx_event_t *) ((uintptr_t) ev & (uintptr_t) ~1);
-
+            /*
+             * 解决事件伪触发问题的体现
+             * 这边有几个关注点
+             * <ul>
+             *   <li>1 防伪码为什么只要2种就行 也就是0和1翻转为什么可以达到验伪事件效果 为什么不需要考虑更久之前的连接</li>
+             *   <li>2 event是nginx抽象的 在向复用器注册事件时翻转instance值 所谓反转就是上次是0这次就是1 上次是1这次就是0 所以nginx是怎么知道event上一次的instance值是多少的</li>
+             * </ul>
+             * 这两个问题
+             * <ul>
+             *   <li>第1个问题 是操作系统保证的 内核中过时事件的保留是短暂的 只会保留一次触发后没被消费掉的伪事件 之后会被清理或覆盖 也就是伪事件根本不会出现更早的连接 最多只有上一次的连接 所以nginx要做的事情就是不要把伪事件注册回复用器就行 识别出伪事件什么也不用做</li>
+             *   <li>第2个问题 nginx中有内存池 所谓的连接关闭仅仅是在结构体标识位打上关闭标识然后把内存还给内存池 并没有真正把内存free给操作系统 所以下一次分配到的event地址里面就是上一次遗留的instance值</li>
+             * </ul>
+             * 操作系统的伪事件留存机制和nginx内存池设计一起作用 只要翻转instance就足够保证防御伪事件
+             * event在内存池中 在上一次释放后 再拿到同一个event地址后 event状态无非就两种
+             * <ul>
+             *   <li>再没被分配出去 也就是没有被复用 它的状态还是close</li>
+             *   <li>被分配出去了 也就是被复用了 它的状态不是close 所以要进行验证 看看是不是过期了 也就是伪事件</li>
+             * </ul>
+             */
             if (ev->closed || ev->instance != instance) {
-                // 解决事件伪触发问题的体现
                 /*
                  * the stale event from a file descriptor
                  * that was just closed in this iteration
@@ -706,6 +736,7 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
 
                 ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                                "kevent: stale event %p", ev);
+                // 不用处理 操作系统自会回收清除没有被处理的伪事件
                 continue;
             }
 

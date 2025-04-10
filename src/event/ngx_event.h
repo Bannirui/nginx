@@ -26,7 +26,15 @@ typedef struct {
 
 #endif
 
+/*
+ * nginx封装了通用事件
+ * <ul>
+ *   <li>既包括网络IO事件</li>
+ *   <li>也包括普通定时任务</li>
+ * </ul>
+ */
 struct ngx_event_s {
+    // 指向nginx封装的连接
     void            *data;
     // 标识当前事件是不是写事件
     unsigned         write:1;
@@ -43,6 +51,7 @@ struct ngx_event_s {
 
     /* used to detect the stale events in kqueue and epoll */
     /*
+     * 防伪码
      * 专门用来解决epoll\kq的selector伪触发问题
      * <ul>
      *   <li>Java中经典bug</li>
