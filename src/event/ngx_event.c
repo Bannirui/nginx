@@ -380,6 +380,7 @@ ngx_handle_read_event(ngx_event_t *rev, ngx_uint_t flags)
         /* kqueue, epoll */
 
         if (!rev->active && !rev->ready) {
+            // 向多路复用器注册事件 监听读 设置为边缘式触发方式 将来配合instance机制防御僵尸事件和伪事件
             if (ngx_add_event(rev, NGX_READ_EVENT, NGX_CLEAR_EVENT)
                 == NGX_ERROR)
             {

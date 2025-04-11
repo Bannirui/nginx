@@ -371,6 +371,7 @@ extern ngx_uint_t            ngx_use_epoll_rdhup;
 
 #define NGX_LEVEL_EVENT    0
 #define NGX_ONESHOT_EVENT  EV_ONESHOT
+// 多路复用器触发模式 边缘式 搭配instance机制防御僵尸事件和伪事件
 #define NGX_CLEAR_EVENT    EV_CLEAR
 
 #undef  NGX_DISABLE_EVENT
