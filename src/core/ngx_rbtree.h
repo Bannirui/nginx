@@ -22,7 +22,17 @@ typedef struct ngx_rbtree_node_s  ngx_rbtree_node_t;
  * 红黑树组织着待处理事件 排序的权重是key
  */
 struct ngx_rbtree_node_s {
-    // 事件的到期时间 啥时候要处理这个事件 在红黑树中用这个时间为权重进行排序
+    /*
+     * 事件的到期时间 啥时候要处理这个事件 在红黑树中用这个时间为权重进行排序
+     * 这个时间格式是毫秒 是个单调时间 语义是系统后的t毫秒
+     * 为什么用相对时间 不用绝对时间
+     * <ul>
+     *   <li>gettimeofday得到的是绝对时间 系统的墙上时间 可能会被管理员修改导致时间倒退</li>
+     *   <li>clock_gettime CLOCK_MONOTONIC得到的是相对时间 相对系统的开机时间 过了t秒</li>
+     * </ul>
+     * 这个时间要用来判断定时任务是不是该执行了 肯定不能因为时间倒退而发生误判
+     * 所以使用的是单调时间
+     */
     ngx_rbtree_key_t       key;
     ngx_rbtree_node_t     *left;
     ngx_rbtree_node_t     *right;

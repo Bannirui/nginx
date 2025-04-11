@@ -12,9 +12,11 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-
+// 结构化时间格式
 typedef struct {
+    // 秒
     time_t      sec;
+    // 毫秒
     ngx_uint_t  msec;
     ngx_int_t   gmtoff;
 } ngx_time_t;

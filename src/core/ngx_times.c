@@ -22,20 +22,38 @@ static ngx_msec_t ngx_monotonic_time(time_t sec, ngx_uint_t msec);
  */
 
 #define NGX_TIME_SLOTS   64
-
+/*
+ * cached_time数组 指向的是当前缓存的最新的系统时间 数组脚标移动实现环形数组
+ * 这个slot可以理解成只给写线程用的写指针
+ * 读线程不会直接用这个指针 读线程用的是ngx_cached_time
+ */
 static ngx_uint_t        slot;
 static ngx_atomic_t      ngx_time_lock;
 /*
- * 缓存的系统时间 格式是毫秒时间戳
+ * 缓存的系统时间 格式是毫秒 语义是这个时间表达的是系统启动后x毫秒 是个相对系统启动的相对时间
+ * 是通过clock_gettime得到的单调时间
  * 为什么下面的ngx_cached_time要用环形设计 而这个系统时间不需要环形设计而只要一个变量
  * <ul>
- *   <li>首先ngx_current_msec是个毫秒时间戳 就是个整数 而ngx_cached_time是结构化的时间 有多个结构体成员</li>
+ *   <li>首先ngx_current_msec就是个整数 而ngx_cached_time是结构化的时间 有多个结构体成员</li>
  *   <li>其次系统对于long读写是原子的 不存在并发不安全问题</li>
  * </ul>
- * 判断定时任务是不是过期仅仅需要一个时间戳就行 不需要结构化时间
+ * 这个时间的唯一作用就是判断定时任务是不是到期该执行了 这个使用场景决定了
+ * 必须单调 不能出现时间倒退导致对定时任务的误判
+ * 为什么结构化时间缓存用的是环形数组形式 而单调时间用的就是一个变量
+ * <ul>
+ *   <li>首先 语义是就不同 单调时间就是一个很明确的数字</li>
+ *   <li>第二 类型 它就是一个整型 不存在更新期间读到一半新数据 一半老数据</li>
+ * </ul>
  */
 volatile ngx_msec_t      ngx_current_msec;
-// 全局指针 指向的cached_time数组 环形缓冲区缓存的系统时间 格式是毫秒时间戳
+/*
+ * 下面这几个都是给读线程直接用的 目的就直接读到缓存的最新的系统时间
+ * ngx_cached_time比较特殊 它是一个指针 本质就是cached_time环形数组的读指针
+ * <ul>
+ *   <li>读操作的是ngx_cached_time 无锁</li>
+ *   <li>写操作的是slot 需要竞争锁 互斥操作 写完移动读指针到最新位置</li>
+ * </ul>
+ */
 volatile ngx_time_t     *ngx_cached_time;
 volatile ngx_str_t       ngx_cached_err_log_time;
 volatile ngx_str_t       ngx_cached_http_time;
@@ -60,7 +78,7 @@ static ngx_int_t         cached_gmtoff;
  * 既然环形的设计目的是为了解耦读写操作 那么是不是只要保证缓冲区大小是2就行 写操作一直在两个位置轮流交替
  * 长度2不是不可以但是存在的隐患是读时被写覆盖
  * 假设A在读系统时间 拿到的指针是1
- * 在A磁期间B发生了多次对系统时间的更新
+ * 在A读期间B发生了多次对系统时间的更新
  *   - B更新系统时间 指针1
  *   - B更新系统时间 指针2
  *   - B更新系统时间 指针1
@@ -101,12 +119,11 @@ ngx_time_init(void)
 }
 
 /**
- * 更新系统时间 更新两个地方
+ * 更新系统时间的缓存 更新两个地方
  * <ul>
- *   <li>ngx_current_msec 时间戳格式 单个变量</li>
+ *   <li>ngx_current_msec 单调的开机毫秒时长 单个变量</li>
  *   <li>cached_time 结构化格式 环形缓冲区</li>
  * </ul>
- * 这个函数的作用是啥 缓存一个全局的系统时间作为当前时间
  * 为什么这么做呢 因为对于高性能服务器如果每次都调用gettimeofday会严重影响性能
  * 什么时机才会调用这个方法更新系统时间呢
  * <ul>
@@ -131,26 +148,53 @@ ngx_time_update(void)
     }
     // 获取系统当前时间
     ngx_gettimeofday(&tv);
-
+    // 系统时间的s
     sec = tv.tv_sec;
+    // 系统时间的毫秒
     msec = tv.tv_usec / 1000;
-    // 更新缓存的系统时间 时间戳格式
+    // 更新缓存时间 单调时间
     ngx_current_msec = ngx_monotonic_time(sec, msec);
-    // 更新缓存的系统时间 结构化格式
+    /*
+     * 正常情况下更新时间的步骤是
+     * <ul>
+     *   <li>数组维护的最新的时间在slot上 slot是直接给写线程使用的 对应这个slot位置的是ngx_cached_time给读线程使用的</li>
+     *   <li>拿到逻辑上的下一个位置 slot等于0或slot+1</li>
+     *   <li>将新时间写到缓存上</li>
+     *   <li>写完后更新读指针ngx_cached_time</li>
+     *   <li>释放写锁</li>
+     * </ul>
+     * 为什么要上写锁 为了保护写这个资源的原子性 为什么呢 因为要这是个结构体要写秒和毫秒两个成员
+     * 那是不是如果只写一个long型数字就可以不用锁 天然原子性
+     * 所以并没有直接去更新到下一个位置上 而是看下秒级没变 那就只用更新毫秒 只更新毫秒就是只更新一个long字段 不怕无锁读的地方读到更新一半这种情况
+     */
     tp = &cached_time[slot];
 
     if (tp->sec == sec) {
+        // 只更新毫秒这个字段 这样做的的目的是为了快速返回 减少持锁时长 减少写并发的锁竞争
         tp->msec = msec;
         ngx_unlock(&ngx_time_lock);
         return;
     }
-
+    /*
+     * 什么时候执行到这 当前的系统时间跟最近缓存的系统时间差异超过了秒级
+     * 也就是说明接下来要更新的是两个字段 秒和毫秒
+     * 那为什么不直接更新当前缓冲区位置 而要更新下一个缓冲区位置呢
+     * 因为此时要更新的不是一个字段 而是两个字段 不保证原子性的话 读的地方可能读到更新一半的数据
+     * 假设我们直接修改当前槽slot不变
+     * <ul>
+     *   <li>此时某个worker正在读取 读线程用的是ngx_cached_time指针在读 而这个指针指向的真是旧的slot</li>
+     *   <li>同时ngx_time_update()正在覆盖这个槽 更新新的sec和msec</li>
+     *   <li>中间态可能发生 读到一半旧时间 一半新时间 例如tp->sec=新时间 tp->msec=旧值</li>
+     * </ul>
+     * 这就会导致时间错乱 日志错乱 甚至逻辑bug
+     * 所以要去更新下一个槽 等写完了再移动ngx_cached_time到最新的槽上
+     */
     if (slot == NGX_TIME_SLOTS - 1) {
         slot = 0;
     } else {
         slot++;
     }
-
+    // 开始更新秒和毫秒两个值
     tp = &cached_time[slot];
 
     tp->sec = sec;
@@ -219,7 +263,7 @@ ngx_time_update(void)
                        tm.ngx_tm_hour, tm.ngx_tm_min, tm.ngx_tm_sec);
     // gcc内存屏障 保证cpu读写顺序 防止指令重排
     ngx_memory_barrier();
-
+    // 已经更新好了最新的时间 此时ngx_cached_time读指针还指向在旧的槽上 更新读指针到最新位置
     ngx_cached_time = tp;
     ngx_cached_http_time.data = p0;
     ngx_cached_err_log_time.data = p1;
@@ -230,7 +274,19 @@ ngx_time_update(void)
     ngx_unlock(&ngx_time_lock);
 }
 
-
+/*
+ * 依赖系统调用clock_gettime
+ * 这个系统调用对比gettimeofday有什么区别
+ * <ul>
+ *   <li>gettimeofday的精度是us clock_gettime的精度是ns</li>
+ *   <li>gettimeofday是墙上时间也就是系统时间 是可以被管理员修改的 CLOCK_MONOTONIC是自系统启动后过了多久 是一个相对时间</li>
+ *   <li>gettimeofday可能出现时间倒退 t1=gettimeofday() t2=gettimeofday() 因为系统时间被修改导致t2可能比t1小 而CLOCK_MONOTONIC是单调时间</li>
+ * </ul>
+ * 对于定时任务这种肯定是不希望出现时间倒退的 时间倒退可能出现误判导致重复执行/漏执行某些定时任务
+ * 所以在定时任务和时间比较的场景肯定是用单调时间的
+ *
+ * @return 系统时间ms格式时间戳 语义是当前时间是系统启动后x毫秒
+ */
 static ngx_msec_t
 ngx_monotonic_time(time_t sec, ngx_uint_t msec)
 {
@@ -242,8 +298,9 @@ ngx_monotonic_time(time_t sec, ngx_uint_t msec)
 #else
     clock_gettime(CLOCK_MONOTONIC, &ts);
 #endif
-
+    // 系统开机后多少秒
     sec = ts.tv_sec;
+    // 系统开机后多少毫秒
     msec = ts.tv_nsec / 1000000;
 
 #endif
