@@ -42,12 +42,13 @@ static char *ngx_kqueue_init_conf(ngx_cycle_t *cycle, void *conf);
 
 // kq的实例
 int                    ngx_kqueue = -1;
-// 要注册到kq的变更事件
+// 监听队列 用来缓存准备提交给kq还没提交的事件
 static struct kevent  *change_list;
-// kq系统调用返回的就绪的事件
+// 就绪队列 kq返回用户态的就绪事件集合
 static struct kevent  *event_list;
 /*
- * nchanges 要注册的变更事件个数 change_list中事件数量
+ * max_changes 全局变量 批量注册事件的上限 一次最多向kq注册多少个事件 最大值512 因此change_list队列攒一批待注册事件的上限就是512
+ * nchanges 攒了多少个要注册到kq中的事件还没提交给内核 暂存在change_list中 nchanges也就是change_list下一个脚标
  * nevents event_list数组长度 不是event_list中就绪事件的个数 比如数组长度10 其中放了5个就绪事件
  */
 static ngx_uint_t      max_changes, nchanges, nevents;
@@ -122,16 +123,8 @@ ngx_module_t  ngx_kqueue_module = {
 
 /*
  * 初始化kq的时候根据模块需求 是不是需要高精度定时器 如果需要高精度定时器就借助kq的定时器事件实现
- * @param timer ms时间 向kq注册个定时器事件 间隔就是这个时间 也就是每隔timer时间就有就绪事件到达 selector被唤醒
- *              为什么设置这个参数 为了系统的效率 兼顾处理网络任务和普通任务
- *              <ul>
- *                <li>系统调用阻塞式 一直等到有事件就绪到达</li>
- *                <li>发起系统调用时指定超时时间 确保不会一直陷入阻塞 这种方式的定时时间依赖<ul>
- *                  <li>系统层面计算超时时间 准确度可能存在问题</li>
- *                  <li>在发起调用时指定超时时间 这种方式的定时精度可能不够</li>
- *                </ul></li>
- *                <li>向kq注册定时器事件 这种定时精度高 本质就是高精度定时器</li>
- *              </ul>
+ * @param timer ms时间 向kq注册个定时器事件 间隔就是这个时间 利用kq实现高精度定时器
+ *              NULL表示不需要借助kq实现定时器功能
  */
 static ngx_int_t
 ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
@@ -166,13 +159,14 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
         }
 #endif
     }
-
+    // 初始化的时候max_changes是static全局变量默认值0 初始化change_list
     if (max_changes < kcf->changes) {
-        // nchanges是要注册的变更事件个数 就是change_list长度
+        // nchanges是要注册的变更事件个数 就是change_list长度 nchanges也是static修饰的全局变量默认值0
         if (nchanges) {
+            // 初始化的时候nchanges是0 一定会进这个分支
             ts.tv_sec = 0;
             ts.tv_nsec = 0;
-            // change_list中变更事件注册到kq
+            // 这一步骤相当于测试下注册事件系统调用 此时change_list里面是空的 nchanges是0 并没有真正注册事件
             if (kevent(ngx_kqueue, change_list, (int) nchanges, NULL, 0, &ts)
                 == -1)
             {
@@ -183,19 +177,19 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
             nchanges = 0;
         }
 
+        // change_list用来存储要注册的事件 也是个全局变量 分配好内存
         if (change_list) {
             ngx_free(change_list);
         }
-        // 上面释放了change_list数组的内存 现在重新分配数组内存 用来将来存放要变更的事件
         change_list = ngx_alloc(kcf->changes * sizeof(struct kevent),
                                 cycle->log);
         if (change_list == NULL) {
             return NGX_ERROR;
         }
     }
-
+    // kq模块提供的批量注册事件的上限
     max_changes = kcf->changes;
-
+    // 初始化event_list
     if (nevents < kcf->events) {
         if (event_list) {
             ngx_free(event_list);
@@ -206,13 +200,13 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
             return NGX_ERROR;
         }
     }
-
+    // 操作指令 一次性事件 支持vnode事件
     ngx_event_flags = NGX_USE_ONESHOT_EVENT
                       |NGX_USE_KQUEUE_EVENT
                       |NGX_USE_VNODE_EVENT;
 
 #if (NGX_HAVE_TIMER_EVENT)
-    // 通过向kq注册定时器事件方式实现高精度定时器
+    // 需要借助kq实现高精度定时器 定时器间隔就是timer(ms)
     if (timer) {
         kev.ident = 0;
         // 表明注册的事件类型是定时器事件 不是读写事件 kq会在设定的时间间隔触发这个事件
@@ -239,15 +233,17 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
                           "kevent(EVFILT_TIMER) failed");
             return NGX_ERROR;
         }
-
+        // 全局变量标识使用了定时器
         ngx_event_flags |= NGX_USE_TIMER_EVENT;
     }
 
 #endif
 
 #if (NGX_HAVE_CLEAR_EVENT)
+    // 边缘式触发
     ngx_event_flags |= NGX_USE_CLEAR_EVENT;
 #else
+    // 水平式触发
     ngx_event_flags |= NGX_USE_LEVEL_EVENT;
 #endif
 
@@ -258,7 +254,7 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
     nevents = kcf->events;
 
     ngx_io = ngx_os_io;
-
+    // 关于事件的一系列接口 包括监听事件增删改 就绪事件处理 为什么要放到全局变量上 跨平台\多实现 让上层只关注接口不关注具体实现细节
     ngx_event_actions = ngx_kqueue_module_ctx.actions;
 
     return NGX_OK;
@@ -316,7 +312,6 @@ ngx_kqueue_done(ngx_cycle_t *cycle)
     nevents = 0;
 }
 
-
 static ngx_int_t
 ngx_kqueue_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
 {
@@ -328,6 +323,7 @@ ngx_kqueue_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
 
     ev->active = 1;
     ev->disabled = 0;
+    // 标识事件是一次性事件
     ev->oneshot = (flags & NGX_ONESHOT_EVENT) ? 1 : 0;
 
 #if 0
@@ -366,7 +362,7 @@ ngx_kqueue_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
     }
 
 #endif
-
+    // 添加到kq监听列表并立即生效
     rc = ngx_kqueue_set_event(ev, event, EV_ADD|EV_ENABLE|flags);
 
     return rc;
@@ -427,37 +423,51 @@ ngx_kqueue_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
 }
 
 
+/*
+ * 注册事件
+ * @param ev nginx封装的事件
+ * @param event 监听的事件类型 EVFILT_READ
+ * @param flags 操作指令
+ *              <ul>
+ *                <li>EV_ADD 添加事件</li>
+ *                <li>EV_ENABLE 启用事件</li>
+ *                <li>EV_ONESHOT 触发一次后自动移除</li>
+ *                <li>EV_CLEAR 边缘触发模式</li>
+ *                <li>NGX_FLUSH_EVENT 立即注册事件到kq</li>
+ *              </ul>
+ */
 static ngx_int_t
 ngx_kqueue_set_event(ngx_event_t *ev, ngx_int_t filter, ngx_uint_t flags)
 {
-    // kq的事件体 在udata阈上存放的是nginx封装的事件体
+    // kq的事件体 在udata域上存放的是nginx封装的事件体
     struct kevent     *kev;
     struct timespec    ts;
     ngx_connection_t  *c;
-
+    // 连接
     c = ev->data;
 
     ngx_log_debug3(NGX_LOG_DEBUG_EVENT, ev->log, 0,
                    "kevent set event: %d: ft:%i fl:%04Xi",
                    c->fd, filter, flags);
-
+    // kq支持批量注册 当前可能是立即注册可能是懒注册 不管咋样都要把事件先缓存在change_list中 所以先看看缓存满了没有
     if (nchanges >= max_changes) {
+        // change_list队列满了 先批量注册到kq 把change_list空出来
         ngx_log_error(NGX_LOG_WARN, ev->log, 0,
                       "kqueue change list is filled up");
 
         ts.tv_sec = 0;
         ts.tv_nsec = 0;
-
+        // 批量注册
         if (kevent(ngx_kqueue, change_list, (int) nchanges, NULL, 0, &ts)
             == -1)
         {
             ngx_log_error(NGX_LOG_ALERT, ev->log, ngx_errno, "kevent() failed");
             return NGX_ERROR;
         }
-
+        // 移动change_list的脚标 逻辑上就清空了change_list队列了 可以继续缓存事件了
         nchanges = 0;
     }
-
+    // 把要注册的事件缓存到change_list中
     kev = &change_list[nchanges];
 
     kev->ident = c->fd;
@@ -505,11 +515,21 @@ ngx_kqueue_set_event(ngx_event_t *ev, ngx_int_t filter, ngx_uint_t flags)
         kev->data = 0;
 #endif
     }
-
+    // 记录当前事件在change_list数组的脚标 方便后面快速索引进行修改更新
     ev->index = nchanges;
+    // 待注册事件已经缓存到了change_list中 更新当前change_list队列数量
     nchanges++;
 
     if (flags & NGX_FLUSH_EVENT) {
+        /*
+         * 这个地方等于是通过NGX_FLUSH_EVENT控制了注册时机
+         * <ul>
+         *   <li>可以及时注册</li>
+         *   <li>可能缓存在change_list中等到下一次调用方指定及时注册</li>
+         *   <li>也可能一直等到change_list满了 等到下一次调用时才注册</li>
+         * </ul>
+         * 所以把控制权交给调用方 对于时延有要求的场景把NGX_FLUSH_EVENT进行立即注册
+         */
         ts.tv_sec = 0;
         ts.tv_nsec = 0;
 

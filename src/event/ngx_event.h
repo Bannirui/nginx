@@ -84,7 +84,14 @@ struct ngx_event_s {
 
     /* the ready event; in aio mode 0 means that no operation can be posted */
     unsigned         ready:1;
-
+    /*
+     * 一次性事件 跟多路复用器中一次性事件映射
+     * 这个事件在触发一次之后 就不会再自动被触发 除非你手动重新注册它
+     * <ul>
+     *   <li>epoll中对应EPOLLONESHOT</li>
+     *   <li>kq中对应EV_ONESHOT</li>
+     * </ul>
+     */
     unsigned         oneshot:1;
 
     /* aio operation is complete */
@@ -146,7 +153,14 @@ struct ngx_event_s {
 #if (NGX_HAVE_IOCP)
     ngx_event_ovlp_t ovlp;
 #endif
-
+    /*
+     * 这个索引指向的是change_list的脚标 事件攒在change_list中还没提交给内核kq期间进行修改删除 通过数组脚标可以快速检索
+     * 再者拿到数组元素后要校验是不是过期了 比如
+     * T1 index处放了事件
+     * T2 被注册到了kq
+     * T3 拿着index过来查询到事件是别人的
+     * 因此要比较事件指针进行校验
+     */
     ngx_uint_t       index;
 
     ngx_log_t       *log;
@@ -370,6 +384,7 @@ extern ngx_uint_t            ngx_use_epoll_rdhup;
 #define NGX_FLUSH_EVENT    EV_ERROR
 
 #define NGX_LEVEL_EVENT    0
+// 向多路复用器注册时添加选项 一次性事件 触发后不再触发
 #define NGX_ONESHOT_EVENT  EV_ONESHOT
 // 多路复用器触发模式 边缘式 搭配instance机制防御僵尸事件和伪事件
 #define NGX_CLEAR_EVENT    EV_CLEAR

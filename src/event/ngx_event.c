@@ -57,7 +57,18 @@ sig_atomic_t          ngx_event_timer_alarm;
 
 static ngx_uint_t     ngx_event_max_module;
 
+/*
+ * 操作指令
+ * <ul>
+ *   <li>一次性事件</li>
+ *   <li>kq还是epoll</li>
+ *   <li>支持vnode事件</li>
+ *   <li>注册了定时器</li>
+ *   <li>边缘式触发</li>
+ * </ul>
+ */
 ngx_uint_t            ngx_event_flags;
+// 回调函数
 ngx_event_actions_t   ngx_event_actions;
 
 
