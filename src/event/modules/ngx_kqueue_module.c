@@ -312,6 +312,16 @@ ngx_kqueue_done(ngx_cycle_t *cycle)
     nevents = 0;
 }
 
+/**
+ * kq中注册事件和获取就绪事件是同一个系统调用kevent
+ * <ul>
+ *   <li>通过不同的changelist和eventlist来控制是注册事件还是获取就绪事件</li>
+ *   <li>通过不同的flags动作指令达到注册 删除 修改操作</li>
+ * </ul>
+ * 在kevent上封装一层主义清晰的事件注册增删改接口
+ * 注册事件
+ * @param flags NGX_FLUSH_EVENT指令控制及时注册到内核
+ */
 static ngx_int_t
 ngx_kqueue_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
 {
@@ -368,7 +378,15 @@ ngx_kqueue_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
     return rc;
 }
 
-
+/*
+ * 删除事件
+ * ngx_kqueue_set_event这个方法是nginx对kq的kevent方法的封装 内部用到了change_list
+ * 因此在删除事件的时候
+ * <ul>
+ *   <li>如果要删除的事件还在change_list中 就说明nginx还没有执行kevent提交给内核 直接在数组change_list删除就行</li>
+ *   <li>如果在change_list中已经没有 说明要向keven注册个新的删除事件</li>
+ * </ul>
+ */
 static ngx_int_t
 ngx_kqueue_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
 {
@@ -377,7 +395,16 @@ ngx_kqueue_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
 
     ev->active = 0;
     ev->disabled = 0;
-
+	/*
+	 * nginx层面的change_list是个缓存队列 意味着缓存在缓存队列中的事件可能已经被注册到了内核
+	 * 所以
+	 * <ul>
+	 *   <li>index有效 在[0...nchanges)之间 说明事件可能还驻留在change_list缓存队列中</li>
+	 *   <li>index无效 不在[0...nchanges)之间 说明事件肯定已经被注册到内核了 而不在change_list中缓存了</li>
+	 * </ul>
+	 * 经过初步的判断之后就从缓存脚标上拿到事件 比较指针
+	 * change_list中存放的是内核kq的事件 从udata上拿到伪地址 把低位抹0拿到真是的nginx事件地址
+	 */
     if (ev->index < nchanges
         && ((uintptr_t) change_list[ev->index].udata & (uintptr_t) ~1)
             == (uintptr_t) ev)
@@ -387,19 +414,30 @@ ngx_kqueue_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
                        ngx_event_ident(ev->data), event);
 
         /* if the event is still not passed to a kernel we will not pass it */
-
+		/*
+		 * 事件并没有真正注册到内核上 从change_list缓存中删除就行
+		 * 删除方式也是经典的数组原地删除 数组长度sz
+		 * <ul>
+		 *   <li>移动数组末脚标达到删除效果 此时数组长度sz-1</li>
+		 *   <li>要删除的刚好就是刚才被删除的位置就结束了</li>
+		 *   <li>否则就在原来数组[0...sz-2]上多了一个待删除位置 相当于数组空洞 用原来[sz-1]填上这个位置</li>
+		 * </ul>
+		 */
         nchanges--;
 
         if (ev->index < nchanges) {
+			// 要保留的事件 用这个事件把因为删除产生的数组空洞填上
             e = (ngx_event_t *)
                     ((uintptr_t) change_list[nchanges].udata & (uintptr_t) ~1);
+			// 空洞放上要保留的事件
             change_list[ev->index] = change_list[nchanges];
+			// 事件在change_list上缓存脚标更新
             e->index = ev->index;
         }
 
         return NGX_OK;
     }
-
+	// 执行到这说明之前缓存时候的change_list已经被批量注册到了内核 那么现在得再向内核申请一次kevent注册 操作指令为删除事件
     /*
      * when the file descriptor is closed the kqueue automatically deletes
      * its filters so we do not need to delete explicitly the event
@@ -414,9 +452,10 @@ ngx_kqueue_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
         ev->disabled = 1;
 
     } else {
+		// 给kq的操作指令为删除事件
         flags |= EV_DELETE;
     }
-
+	// 调用事件注册
     rc = ngx_kqueue_set_event(ev, event, flags);
 
     return rc;
@@ -424,7 +463,8 @@ ngx_kqueue_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
 
 
 /*
- * 注册事件
+ * 注册事件 这个注册可能是个延迟注册 需要立即注册到内核需要指定falgs操作指令
+ * 对kevent系统调用的封装 因为kevent支持批量提交 因此nginx维护了change_list作缓存实现特定时机的批量提交
  * @param ev nginx封装的事件
  * @param event 监听的事件类型 EVFILT_READ
  * @param flags 操作指令
@@ -568,7 +608,18 @@ ngx_kqueue_notify(ngx_event_handler_pt handler)
 #endif
 
 /**
- * 发起一次kq系统调用看看有没有就绪的事件
+ * 发起一次kq系统调用看看有没有就绪的事件 拿到就绪事件后就做两步处理
+ * <ul>
+ *   <li>事件打上标识 区分连接事件 读写事件<ul>
+ *     <li>连接事件有多少个连接请求进来</li>
+ *     <li>读事件有多少内容可读</li>
+ *     <li>写事件可以写多少数据</li>
+ *   </ul></li>
+ *   <li>把事件投递到队列<ul>
+ *      <li>连接事件入ngx_posted_accept_events队列</li>
+ *      <li>读写事件入ngx_posted_events队列</li>
+ *   </ul></li>
+ * </ul>
  * @param cycle
  * @param timer 定时器 selector系统调用涉及阻塞 系统提供的API带超时 指定系统调用的超时时间ms
  *              <ul>定时器有2种实现方式
@@ -595,11 +646,11 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
     nchanges = 0;
 
     if (timer == NGX_TIMER_INFINITE) {
-        // 这个标识说明定时器用的是高精度定时器机制
+        // 这个标识说明定时器用的是高精度定时器机制 不用再特意设置超时防止kq的kevent方法陷入阻塞出不来 定时器事件一定会保证kevent方法被唤醒的
         tp = NULL;
 
     } else {
-        // 设置了明确的复用器调用超时时间 通过系统调用超时非阻塞方式达到定时器机制
+		// nginx并没有在初始化kq的时候指定定时器事件 所以为了保证kevent系统调用不会一直阻塞 要设置个超时时间让方法唤醒
         ts.tv_sec = timer / 1000;
         ts.tv_nsec = (timer % 1000) * 1000000;
 
@@ -619,6 +670,12 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "kevent timer: %M, changes: %d", timer, n);
     /*
+     * 因为kevent方法有两个功能 一次系统调用一点也浪费性能干了两件事情
+     * <ul>
+     *   <li>注册事件</li>
+     *   <li>拿到就绪事件</li>
+     * </ul>
+     * 这也是为什么虽然用了change_list最多也只是延迟懒注册 而不会丢失注册 因为事件循环线程会一直尝试调用kevent拿就绪事件 趁机对change_list缓存事件进行注册
      * @param ngx_kqueue kq实例
      * @param tp 系统调用的超时设置 没有事件到达唤醒线程 就阻塞到这个时间后唤醒线程不要一直阻塞
      *           <ul>
@@ -689,9 +746,9 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
         }
 
 #endif
-
+		// 拿到伪地址 对应nginx的event和instance防伪码
         ev = (ngx_event_t *) event_list[i].udata;
-        // 就绪事件类型
+        // 就绪事件类型 看看是不是读写事件 连接事件也是可写事件 只是可写内容是0而已
         switch (event_list[i].filter) {
 
         case EVFILT_READ: // 可读
@@ -718,16 +775,18 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
              * 伪事件的防御设计
              * 在复用器kq的udata中存放的是一个变种地址
              * <ul>
-             *   <li>指针后3位是0</li>
+             *   <li>64位架构地址是64位8Byte对齐 说明指针的后3位是0</li>
              *   <li>最低位被放上了翻转版本号</li>
              * </ul>
              * 所以拿到内核返回的udata
              * <ul>
-             *   <li>只要把最低位抹成0就是真正的用户事件地址</li>
+             *   <li>只要把最低位抹成0就是真正的用户事件地址 nginx封装的通用事件event</li>
              *   <li>只解析最低位的1bit就是翻转版本号 防伪码</li>
              * </ul>
              */
+			// 拿到fd的防伪码
             instance = (uintptr_t) ev & 1;
+			// 拿到nginx的event
             ev = (ngx_event_t *) ((uintptr_t) ev & (uintptr_t) ~1);
             /*
              * 解决事件伪触发问题的体现
@@ -756,25 +815,35 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
 
                 ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                                "kevent: stale event %p", ev);
-                // 不用处理 操作系统自会回收清除没有被处理的伪事件
+				/*
+				 * <ul>
+				 *   <li>event已经close了说明内核给的fd是僵尸事件 因为在注册事件的时候指定的触发模式是边缘式触发 事件只会触发一次 所以不处理 让事件继续挂在内核监听列表也无所谓</li>
+				 *   <li>instance防伪码不一致说明fd是伪事件 那就更不能处理了 后面自然会有fd真正的event</li>
+				 * </ul>
+				 */
                 continue;
             }
 
             if (ev->log && (ev->log->log_level & NGX_LOG_DEBUG_CONNECTION)) {
                 ngx_kqueue_dump_event(ev->log, &event_list[i]);
             }
-
+			// 一次性事件
             if (ev->oneshot) {
                 ev->active = 0;
             }
-
+			/**
+			 * 记录
+			 * 连接事件 有多少个连接请求过来
+			 * 可读事件 有多少Byte数据过来 可以read
+			 * 可写事件 有多少Byte空间进行write
+			 */
             ev->available = event_list[i].data;
 
             if (event_list[i].flags & EV_EOF) {
                 ev->pending_eof = 1;
                 ev->kq_errno = event_list[i].fflags;
             }
-
+			// 事件就绪
             ev->ready = 1;
 
             break;

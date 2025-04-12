@@ -78,11 +78,21 @@ struct ngx_event_s {
      * the event was passed or would be passed to a kernel;
      * in aio mode - operation was posted.
      */
+	/*
+	 * 逻辑上标识启用事件 管理nginx event的生命周期
+	 * 跟oneshot配合使用 对于oneshot一次性事件 从多路复用器拿到就绪后 就要把active置为0
+	 */
     unsigned         active:1;
 
     unsigned         disabled:1;
 
     /* the ready event; in aio mode 0 means that no operation can be posted */
+	/*
+	 * 事件就绪标识
+	 * accept事件 有连接进来 多少个连接 数量存在available中
+	 * read事件 有数据发过来可以读 数据大小存在available中
+	 * write事件 缓冲区可以写数据了 可以写多少存在available中
+	 */
     unsigned         ready:1;
     /*
      * 一次性事件 跟多路复用器中一次性事件映射
@@ -144,7 +154,14 @@ struct ngx_event_s {
      *   accept:     1 if accept many, 0 otherwise
      *   read:       bytes to read when event is ready, -1 if not known
      */
-
+	/*
+	 * 给多路复用器kq用时 从kevent拿到就绪事件后 监听的事件类型不同 这个值主义也不同
+	 * <ul>
+	 *   <li>连接事件 有多少个连接请求</li>
+	 *   <li>读事件 有多少Byte数据可读</li>
+	 *   <li>写事件 可以写多少Byte数据</li>
+	 * </ul>
+	 */
     int              available;
 
     ngx_event_handler_pt  handler;
@@ -219,9 +236,11 @@ struct ngx_event_aio_s {
 
 #endif
 
-
+// 多路复用器涉及到的api 兼容跨平台 所以nginx为epoll\kq封装了一层 kq模块到时候把真正的实现暴露出来
 typedef struct {
+	// 向多路复用器注册事件 flags控制及时还是懒惰
     ngx_int_t  (*add)(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags);
+	// 向多路复用器注册事件
     ngx_int_t  (*del)(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags);
 
     ngx_int_t  (*enable)(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags);
@@ -231,7 +250,7 @@ typedef struct {
     ngx_int_t  (*del_conn)(ngx_connection_t *c, ngx_uint_t flags);
 
     ngx_int_t  (*notify)(ngx_event_handler_pt handler);
-
+	// 处理就绪事件
     ngx_int_t  (*process_events)(ngx_cycle_t *cycle, ngx_msec_t timer,
                                  ngx_uint_t flags);
 
@@ -346,6 +365,7 @@ extern ngx_uint_t            ngx_use_epoll_rdhup;
 /*
  * event must be passed to kernel right now, do not wait until batch processing.
  */
+// kq支持批量注册 nginx做了层缓存 将事件缓存延迟批量注册 通过flags声明这个控制指令立即注册到内核的多路复用器上 不要缓存等批量
 #define NGX_FLUSH_EVENT    4
 
 
