@@ -35,21 +35,13 @@ static void *ngx_event_core_create_conf(ngx_cycle_t *cycle);
 static char *ngx_event_core_init_conf(ngx_cycle_t *cycle, void *conf);
 
 /*
- * 事件的时间精度 单位毫秒
- * 定义了事件模块处理事件的最小时间间隔
- * 定时器事件的触发时机不会小于这个时间间隔
- * 比如是100ms 那么即使定时器任务在设置的时间点上应该触发 它也会在下一个100毫秒的周期中执行
- * 如何影响定时器事件
- * 定时器事件通过事件驱动模型被管理 定时器事件通常会被注册到事件处理循环中 当定时器超时时 事件处理机制会根据ngx_timer_resolution来计算何时触发
+ * nginx借助向多路复用器注册定时器事件方式实现自由可控的定时机制
+ * 当系统有精度很高的定时任务需要管理的时候通过这个高精度定时器机制实现管理
+ * 单位是毫秒 每过这么多毫秒定时器事件就就绪 唤醒阻塞等到的kevent系统调用 让事件循环器线程得到一次执行机会 以便依次处理待处理任务
  * <ul>
- *   <li>如果ngx_timer_resolution设置得比较低 Nginx会更多地检查定时器事件 但这样可能会导致性能开销增加 因为更多的时间片被用来检查和触发定时器事件</li>
- *   <li>较高的分辨率可能会导致定时器事件的触发延迟 但会减少检查频率 从而提高系统的吞吐量</li>
- * </ul>
- * 这个机制的设定是什么概念呢 这是一个全局变量 表示Nginx主循环检查定时器事件的精度(单位是毫秒)
- * 本质就是对线程的唤醒方式的设定
- * <ul>
- *   <li>一种是不设定定时精度 那么在调用系统调用的时候带上超时 让线程的唤醒托管给selector系统调用</li>
- *   <li>另一种是设定定时精度 用系统定时器setitimer+SIGALRM定期唤醒主循环 这样做的好处是可以让事件精度更可控 更精准地处理定时器事件 适合对时间敏感的应用场景</li>
+ *   <li>网络连接任务</li>
+ *   <li>定时任务</li>
+ *   <li>网络读写任务</li>
  * </ul>
  */
 static ngx_uint_t     ngx_timer_resolution;
@@ -68,7 +60,7 @@ static ngx_uint_t     ngx_event_max_module;
  * </ul>
  */
 ngx_uint_t            ngx_event_flags;
-// 回调函数
+// 多路复用器涉及到的api 兼容跨平台 所以nginx为epoll\kq封装了一层 kq模块到时候把真正的实现暴露出来
 ngx_event_actions_t   ngx_event_actions;
 
 
@@ -80,12 +72,8 @@ ngx_atomic_t         *ngx_accept_mutex_ptr;
 ngx_shmtx_t           ngx_accept_mutex;
 /*
  * nginx支持多进程 在多进程模式下 大家都监听在相同端口下 所有工作进程都处于监听状态
- * 当有新的连接进来时 如果没有控制就会导致多个进程同时接收到同一个请求 这种情况被称为竞争接收 可能会导致的问题
- * <ul>
- *   <li>连接被多个进程同时处理</li>
- *   <li>资源浪费</li>
- * </ul>
- * 为了避免这种情况引入了accept mutex 即一个互斥锁 确保在同一时刻只有一个进程能够接收新的连接 其他进程需要等待
+ * 当有新的连接进来时 如果没有控制就会导致多个进程同时接收到同一个请求 这种情况被称为竞争接收 可能会导致的问题 连接被多个进程同时处理 最终只有一个进程会成功 其他进程都会失败
+ * 为了避免这种情况引入了accept mutex即一个互斥锁 确保在同一时刻只有一个进程能够接收新的连接 其他进程需要等待
  * ngx_use_accept_mutex这个标识就用来标识要不要开启互斥机制
  * <ul>
  *   <li>单进程模式下肯定就不用开启 0标识</li>
@@ -94,11 +82,16 @@ ngx_shmtx_t           ngx_accept_mutex;
  */
 ngx_uint_t            ngx_use_accept_mutex;
 ngx_uint_t            ngx_accept_events;
-// 当前进程是不是已经抢到了accept锁
+/*
+ * 标识当前进程是不是已经抢到了accept锁 什么意思 有什么用处
+ * <ul>
+ *   <li>首先在多进程下 防止accept惊群 要对accept事件处理进行上锁</li>
+ *   <li>然后 如果在进程间发现了负载不均衡 有些进程连接多 有些进程连接少 连接多的满了的进程需要冷静冷静不要再接收新连接 就可以通过放弃抢锁这个行为达到放弃处理accept事件的效果 进而达到负载均衡</li>
+ * </ul>
+ */
 ngx_uint_t            ngx_accept_mutex_held;
 // 抢accept锁失败后多久再重试
 ngx_msec_t            ngx_accept_mutex_delay;
-// 控制什么时候不去accept新连接 如连接数满了
 ngx_int_t             ngx_accept_disabled;
 ngx_uint_t            ngx_use_exclusive_accept;
 
@@ -238,7 +231,13 @@ ngx_module_t  ngx_event_core_module = {
 };
 
 /**
- * 事件循环的处理
+ * 事件循环器
+ * 不管是单进程模式还是多进程模式 区别只是
+ * <ul>
+ *   <li>单进程下 工作进程执行这个事件循环</li>
+ *   <li>多进程下 master进程不参与工作仅仅负责管理worker进程 但是每相worker进程一定要自己参与处理事件循环的</li>
+ * </ul>
+ * 对于网络连接事件 为了避免惊群现象 在多进程下要进行上锁操作
  */
 void
 ngx_process_events_and_timers(ngx_cycle_t *cycle)
@@ -263,13 +262,12 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     ngx_msec_t  timer, delta;
 
     if (ngx_timer_resolution) {
-        // 设置了事件处理精度的情况下定时器设置为无穷大让定时器永远不会被触发
+        // ngx_timer_resolution标识nginx系统需要高精度定时器 说明当初初始化复用器的时候已经给kq注册了定时器事件 此时调用复用器kevent获取就绪事件就不要指定超时了 阻塞方式调用就行 即使没有网络事件到达内核定时器事件自会唤醒的
         timer = NGX_TIMER_INFINITE;
         flags = 0;
 
     } else {
-        // 没有设置事件处理精度
-        // 再过timer毫秒需要唤醒阻塞进行任务调度
+		// ngx_timer_resolution没有设置说明nginx没有使用复用器实现定时器 在调用kevent的时候就需要手动指定超时时间防止陷入阻塞导致事件循环器线程唤醒不了 超时多久就看定时任务队列情况了
         timer = ngx_event_find_timer();
         flags = NGX_UPDATE_TIME;
 
@@ -285,6 +283,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     }
 
     if (ngx_use_accept_mutex) {
+		// 多进程master-worker模式下 每个worker要进行上锁的 防止网络accept事件惊群 在单进程下不会进到这个分支
         if (ngx_accept_disabled > 0) {
             ngx_accept_disabled--;
 
@@ -294,7 +293,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
             }
 
             if (ngx_accept_mutex_held) {
-                // 事件要入队处理
+				//
                 flags |= NGX_POST_EVENTS;
 
             } else {
@@ -317,7 +316,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
      * <ul>
      *   <li>ngx_process_events是个宏定义</li>
      *   <li>这个宏是接口ngx_event_actions中的方法process_events</li>
-     *   <li>至于接口对应的实现是在编译时根据启用的模块进行赋值 kequeue的是ngx_kqueue_module_ctx中的actions</li>
+     *   <li>至于接口对应的实现是在编译时根据启用的模块进行赋值 kqueue的是ngx_kqueue_module_ctx中的actions</li>
      * </ul>
      * 最终调用到系统的kq 拿到就绪的网络IO事件
      * 能继续执行下去的场景一定是
@@ -329,19 +328,28 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
      * </ul>
      */
     (void) ngx_process_events(cycle, timer, flags);
-
+	/*
+	 * 能跳出内核多路复用器执行到这
+     * 也就是事件循环器的循环线程得到了一次处理任务的机会 这个时候是一定有任务要处理的
+     * <ul>
+     *   <li>要么是有网络任务要处理 可能是连接事件任务 可能是读写事件任务</li>
+     *   <li>要么是定时任务要处理</li>
+     *   <li>要么既有网络事件任务要处理 又有定时任务要处理</li>
+     * </ul>
+	 */
     delta = ngx_current_msec - delta;
 
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "timer delta: %M", delta);
-    // 先处理网络accept连接事件
+    // 优先级1 尝试看看有没有网络accept连接任务要处理
     ngx_event_process_posted(cycle, &ngx_posted_accept_events);
 
     if (ngx_accept_mutex_held) {
+		// 为什么在这个地方就要释放锁 因为这个锁的目的就是同步accept事件处理的 处理完了就可以释放了 最小化上锁粒度也是保证系统性能的方式
         ngx_shmtx_unlock(&ngx_accept_mutex);
     }
     /*
-     * 处理普通任务 定时任务
+     * 优先级2 尝试看看有没有定时任务要处理
      * 执行到这的情况有两种
      * <ul>
      *   <li>系统调用kq指定的超时时间 超时到期了 而这个超时时间就是在系统调用前根据任务队列的到期时间算出来的</li>
@@ -366,7 +374,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
      * </ul>
      */
     ngx_event_expire_timers();
-    // 再处理网络IO的读写事件
+    // 优先级3 尝试看看有没有理网络IO的读写任务要处理
     ngx_event_process_posted(cycle, &ngx_posted_events);
 }
 
@@ -536,7 +544,24 @@ ngx_handle_write_event(ngx_event_t *wev, size_t lowat)
     return NGX_OK;
 }
 
-
+/*
+ * event模块的初始化
+ * event模块属于core核心模块
+ * 会在ngx_cycle中回调到 在ngx_cycle中
+ * <ul>
+ *   <li>先回调到这 根据监听端口reuse情况决定要不要给后面worker进程复制端口副本 worker进程人手一份</li>
+ *   <li>可能是一份监听端口 也可能多份监听端口 创建好socket进行listen</li>
+ * </ul>
+ * 怎么为worker进程创建监听端口副本呢 假设总共有n个worker进程
+ * 在ngx_cycle中回调到这之前 ngx_cycle已经从配置文件中解析了要监听哪些端口 假设80跟81 并切系统是支持端口复用的
+ * <ul>
+ *   <li>总共有n个worker进程 人手一份 总共需要n份 现在只有一份</li>
+ *   <li>n个进程编号依次是[0...n-1]</li>
+ *   <li>现在已经有的这份80跟81给0号进程用</li>
+ *   <li>再复制3份80跟81出来从1到n-1编号</li>
+ *   <li>一起放到cycle的listening数组 那么就总共有n份了</li>
+ * </ul>
+ */
 static char *
 ngx_event_init_conf(ngx_cycle_t *cycle, void *conf)
 {
@@ -572,14 +597,14 @@ ngx_event_init_conf(ngx_cycle_t *cycle, void *conf)
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
     if (!ngx_test_config && ccf->master) {
-
+		// 多进程模式下
         ls = cycle->listening.elts;
         for (i = 0; i < cycle->listening.nelts; i++) {
-
+			// 端口重用reuseport下才允许为每个worker都复制监听端口 并且已经存在的那份就是给0号进程的
             if (!ls[i].reuseport || ls[i].worker != 0) {
                 continue;
             }
-
+			// 除了0号进程外 给其它进程复制一份要监听的端口编上进程索引号放加listening数组
             if (ngx_clone_listening(cycle, &ls[i]) != NGX_OK) {
                 return NGX_CONF_ERROR;
             }
@@ -755,7 +780,12 @@ ngx_timer_signal_handler(int signo)
 #endif
 
 /**
- * 在nginx工作进程启动后 为事件模块的循环事件做初始化工作
+ * 在nginx工作进程启动后 初始化事件模块
+ * 在多进程模式下
+ * <ul>
+ *   <li>如果启用accept锁 在这个方法中是不注册连接事件的 因为开启了accept锁的目的就是为了防止accept惊群 所以注册连接事件为后置到事件循环中先抢锁 抢到再注册</li>
+ *   <li>如果没有启用accept锁 在这个方法会给每个worker进程都注册连接事件 将来可能会引起accept惊群</li>
+ * </ul>
  */
 static ngx_int_t
 ngx_event_process_init(ngx_cycle_t *cycle)
@@ -772,8 +802,15 @@ ngx_event_process_init(ngx_cycle_t *cycle)
     ecf = ngx_event_get_conf(cycle->conf_ctx, ngx_event_core_module);
 
     if (ccf->master && ccf->worker_processes > 1 && ecf->accept_mutex) {
-        // 多进程模式下开启竞争接收
+        /*
+         * 多进程模式下开启竞争接收
+         * 为什么要对网络连接进行互斥 在多进程下每个worker进程都有自己的循环处理 如果不对连接进行互斥 就意味着同一时刻多个进程同时进行accept操作 结果是只有一个进程能执行accept成功 其他都失败
+         * 这就是accept引起了惊群
+         * 所以要对accept操作进行上锁
+         * 为什么其他读写事件任务不需要加锁呢 因为每个进程有自己的事件循环 accept后会将事件注册在各自的事件循环器 所以将来对应的读写事件也只有自己处理 不存在竞争问题
+		 */
         ngx_use_accept_mutex = 1;
+		// 这个函数调用时机是在worker进程创建好后 所以此时工作进程初始化占锁标识为0 标识没有抢到accept锁
         ngx_accept_mutex_held = 0;
         ngx_accept_mutex_delay = ecf->accept_mutex_delay;
 
@@ -929,10 +966,14 @@ ngx_event_process_init(ngx_cycle_t *cycle)
     /* for each listening socket */
 
     ls = cycle->listening.elts;
+	/*
+	 * 在worker进程启动后会加调到这儿 下面要对监听端口注册连接事件
+	 */
     for (i = 0; i < cycle->listening.nelts; i++) {
 
 #if (NGX_HAVE_REUSEPORT)
         if (ls[i].reuseport && ls[i].worker != ngx_worker) {
+			// 在reuseport情况下 listening数组中放了所有worker的监听副本 用worker进程编号标识归属 每个worker进程只处理属于自己的端口
             continue;
         }
 #endif
@@ -1042,6 +1083,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 #endif
 
         if (ngx_use_accept_mutex) {
+			// 下面的逻辑是向多复用器注册连接事件 如果启用了accept互斥锁就不是每个worker进程启动后就注册连接事件而是把注册动作后置到事件循环中
             continue;
         }
 
@@ -1062,7 +1104,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
         }
 
 #endif
-
+		// worker进程注册对端口的连接事件监听注册到多路复用器上 这个时机在worker进程启动后就注册 上面有个判断是不是启用了accept锁 如果没有启动互斥锁 每个进程启动后就开始注册连接事件 这种方式可能会引起accept惊群
         if (ngx_add_event(rev, NGX_READ_EVENT, 0) == NGX_ERROR) {
             return NGX_ERROR;
         }
@@ -1493,6 +1535,15 @@ ngx_event_core_init_conf(ngx_cycle_t *cycle, void *conf)
     ngx_conf_init_ptr_value(ecf->name, event_module->name->data);
 
     ngx_conf_init_value(ecf->multi_accept, 0);
+	/*
+	 * 配置文件中
+	 * events {
+	 * accept_mutex on;  # 默认就是 on
+	 * worker_connections 1024;
+     * }
+     * 配置了开启accept锁就会开启
+     * 没有配置就用默认值 关闭accept锁
+	 */
     ngx_conf_init_value(ecf->accept_mutex, 0);
     ngx_conf_init_msec_value(ecf->accept_mutex_delay, 500);
 

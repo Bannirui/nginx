@@ -94,7 +94,9 @@ ngx_create_listening(ngx_conf_t *cf, struct sockaddr *sockaddr,
     return ls;
 }
 
-
+/*
+ * @param ls nginx要监听的端口
+ */
 ngx_int_t
 ngx_clone_listening(ngx_cycle_t *cycle, ngx_listening_t *ls)
 {

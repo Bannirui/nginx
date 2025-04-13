@@ -339,7 +339,7 @@ main(int argc, char *const *argv)
     ngx_cycle = cycle;
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
-
+	// 配置是master-worker多进程模式 更新全局变量进程模式
     if (ccf->master && ngx_process == NGX_PROCESS_SINGLE) {
         ngx_process = NGX_PROCESS_MASTER;
     }
@@ -380,13 +380,13 @@ main(int argc, char *const *argv)
     }
 
     ngx_use_stderr = 0;
-    // nginx单进程或者多进程模式下有不同的事件模式
+    // 看worker工作进程数量决定启动模式 单进程模式还是master-worker多进程模式
     if (ngx_process == NGX_PROCESS_SINGLE) {
-        // 单进程模式
+        // 单进程模式 只有一个worker进程
         ngx_single_process_cycle(cycle);
 
     } else {
-        // 多进程模式
+        // 多进程模式 master-worker进程模式 有一个master负责管理所有的worker进程 有多个worker进程
         ngx_master_process_cycle(cycle);
     }
 
@@ -1158,7 +1158,7 @@ ngx_core_module_create_conf(ngx_cycle_t *cycle)
 }
 
 /*
- * 初始化核心模块配置
+ * 初始化核心模块配置的默认值
  */
 static char *
 ngx_core_module_init_conf(ngx_cycle_t *cycle, void *conf)
@@ -1166,6 +1166,7 @@ ngx_core_module_init_conf(ngx_cycle_t *cycle, void *conf)
     ngx_core_conf_t  *ccf = conf;
 
     ngx_conf_init_value(ccf->daemon, 1);
+	// 默认进程模式 master-worker进程模式
     ngx_conf_init_value(ccf->master, 1);
     ngx_conf_init_msec_value(ccf->timer_resolution, 0);
     ngx_conf_init_msec_value(ccf->shutdown_timeout, 0);
@@ -1573,7 +1574,14 @@ ngx_get_cpu_affinity(ngx_uint_t n)
 #endif
 }
 
-
+/*
+ * nginx配置文件中worker_processes的解析 worker进程的数量
+ * <ul>
+ *   <li>1个进程</li>
+ *   <li>n n个进程 用1个master进程管理这么多worker进程</li>
+ *   <li>auto 让nginx自己根据cpu核数决定进程数</li>
+ * </ul>
+ */
 static char *
 ngx_set_worker_processes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -1587,7 +1595,7 @@ ngx_set_worker_processes(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     value = cf->args->elts;
-
+	// 配置了auto 进程数设置为cpu核数
     if (ngx_strcmp(value[1].data, "auto") == 0) {
         ccf->worker_processes = ngx_ncpu;
         return NGX_CONF_OK;

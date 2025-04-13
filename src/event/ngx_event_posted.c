@@ -22,13 +22,20 @@ ngx_queue_t  ngx_posted_next_events;
 // 存放网络IO的普通事件也就是是网络IO的读写事件
 ngx_queue_t  ngx_posted_events;
 
-
+/**
+ * 尝试处理accept队列的事件任务
+ * <ul>
+ *   <li>ngx_posted_accept_events这个队列里面缓存的是事件循环前置步骤调用内核kevent拿到的就绪网络连接事件</li>
+ *   <li>现在在这个环节把队列里面缓存待处理的连接任务都处理掉</li>
+ * </ul>
+ * 换言之 队列里面空的就没连接事件要处理 有多少就处理多少
+ */
 void
 ngx_event_process_posted(ngx_cycle_t *cycle, ngx_queue_t *posted)
 {
     ngx_queue_t  *q;
     ngx_event_t  *ev;
-
+	// 轮询队列里面待处理的连接事件进行处理
     while (!ngx_queue_empty(posted)) {
 
         q = ngx_queue_head(posted);

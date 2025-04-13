@@ -27,7 +27,7 @@ static void ngx_cache_manager_process_cycle(ngx_cycle_t *cycle, void *data);
 static void ngx_cache_manager_process_handler(ngx_event_t *ev);
 static void ngx_cache_loader_process_handler(ngx_event_t *ev);
 
-
+// 全局变量 标识nginx的进程模式是单进程模式还是master-worker多进程模式
 ngx_uint_t    ngx_process;
 ngx_uint_t    ngx_worker;
 ngx_pid_t     ngx_pid;
@@ -70,7 +70,8 @@ static ngx_log_t        ngx_exit_log;
 static ngx_open_file_t  ngx_exit_log_file;
 
 /**
- * nginx以多进程模式启动时候的事件模型
+ * nginx以多进程模式启动
+ * 1个master进程负责管理worker进程 当前进程就是master进程 它来创建多个worker进程
  */
 void
 ngx_master_process_cycle(ngx_cycle_t *cycle)
@@ -128,7 +129,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
-
+	// 创建worker进程
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_RESPAWN);
     ngx_start_cache_manager_processes(cycle, 0);
@@ -137,7 +138,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     delay = 0;
     sigio = 0;
     live = 1;
-
+	// master进程的主循环
     for ( ;; ) {
         if (delay) {
             if (ngx_sigalrm) {
@@ -163,7 +164,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "sigsuspend");
 
         sigsuspend(&set);
-
+		// 服务启动的时候先缓存一下系统时间
         ngx_time_update();
 
         ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
@@ -214,6 +215,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_reconfigure = 0;
 
             if (ngx_new_binary) {
+				// 创建worker子进程
                 ngx_start_worker_processes(cycle, ccf->worker_processes,
                                            NGX_PROCESS_RESPAWN);
                 ngx_start_cache_manager_processes(cycle, 0);
@@ -277,7 +279,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 }
 
 /**
- * nginx以单进程模式启动时候的事件模型
+ * nginx单进程模式
  */
 void
 ngx_single_process_cycle(ngx_cycle_t *cycle)
@@ -292,7 +294,7 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->init_process) {
             /*
-             * 这个地方会回调到ngx_event的init_process函数 在nginx工作进程启动后 为事件模块的循环事件做初始化工作 下面再启动事件循环
+             * 这个地方会回调到ngx_event的init_process函数 为事件模块的循环事件做初始化工作 下面再启动事件循环
              */
             if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {
                 /* fatal */
@@ -338,7 +340,9 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
     }
 }
 
-
+/*
+ * master创建worker子进程
+ */
 static void
 ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
 {
@@ -347,7 +351,7 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "start worker processes");
 
     for (i = 0; i < n; i++) {
-
+		// 创建子进程 子进程创建好后回调函数ngx_worker_process_cycle(cycle, i)
         ngx_spawn_process(cycle, ngx_worker_process_cycle,
                           (void *) (intptr_t) i, "worker process", type);
 
@@ -702,16 +706,20 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
 }
 
 /*
- *
+ * 子进程运行逻辑
+ * 子进程是由master进程创建的 创建好后会传两个参数
+ * @param cycle nginx的全局变量
+ * @param data 子进程的编号 0-based 假设有n个子进程 编号就是[0...n-1]
  */
 static void
 ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 {
+	// 子进程的编号
     ngx_int_t worker = (intptr_t) data;
 
     ngx_process = NGX_PROCESS_WORKER;
     ngx_worker = worker;
-    // 设置进程标题
+	// 初始化工作进程
     ngx_worker_process_init(cycle, worker);
 
     ngx_setproctitle("worker process");
@@ -907,6 +915,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
     // 初始化完了工作进程 回调模块
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->init_process) {
+			// 这个地方会调用到ngx_event_process_init函数
             if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {
                 /* fatal */
                 exit(2);

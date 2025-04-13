@@ -83,7 +83,11 @@ ngx_signal_t  signals[] = {
     { 0, NULL, "", NULL }
 };
 
-
+/**
+ * 创建子进程
+ * @param proc 子进程成功后启动函数 要传两个参数给启动函数 proc(cycle, data)
+ * @param data 工作进程的编号 假设n个工作进程 编号是[0...n-1]
+ */
 ngx_pid_t
 ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     char *name, ngx_int_t respawn)
@@ -183,7 +187,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
 
     ngx_process_slot = s;
 
-
+	// 创建子进程 fork系统调用返回-1标识创建进程失败
     pid = fork();
 
     switch (pid) {
@@ -197,6 +201,10 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     case 0:
         ngx_parent = ngx_pid;
         ngx_pid = ngx_getpid();
+		/*
+		 * 进程创建成功后启动入口 传两个参数
+		 * @param data 工作进程的编号 假设有n个工作进程 编号是[0...n-1]
+		 */
         proc(cycle, data);
         break;
 

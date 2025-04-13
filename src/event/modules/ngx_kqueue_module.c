@@ -330,10 +330,20 @@ ngx_kqueue_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
     ngx_event_t       *e;
     ngx_connection_t  *c;
 #endif
-
+	/*
+	 * 网络事件的读写事件是跟着连接事件跑的
+	 * 每个worker进程都有自己的事件循环处理器
+	 * 当决定了哪个进程监听对某个端口的连接 那么之后这个端口的读写一定也是注册在那个进程自己的多路复用器上 自然那个端口的读写事件一定由那个进程自己处理
+	 * <ul>
+	 *   <li>由谁注册监听端口的连接由进程自己抢锁决定</li>
+	 *   <li>因为事件循环器是在for循环线程中一直工作的 所以一旦进程抢锁成功注册了某个端口的连接监听 就要标记端口读事件已经在用了 别的进程即使在别的轮次的事件循环中抢到了accept锁 也不要再重复监听这个端口的连接了</li>
+	 * </ul>
+	 */
     ev->active = 1;
     ev->disabled = 0;
-    // 标识事件是一次性事件
+    /*
+     * 标识事件是一次性事件
+	 */
     ev->oneshot = (flags & NGX_ONESHOT_EVENT) ? 1 : 0;
 
 #if 0
@@ -627,7 +637,12 @@ ngx_kqueue_notify(ngx_event_handler_pt handler)
  *                <li>2是借助kq的定时器事件 这种定时器是高精度定时器</li>
  *              </ul>
  *              定时器的作用是周期性更新系统时间
- * @param flags
+ * @param flags 这个地方有个细节 NGX_POST_EVENTS的处理
+ *              什么时候有这个控制指令什么时候没有
+ *              <ul>
+ *                <li>单进程下没有事件入队指令 连接事件 读事件 写事件 拿到一个处理一个</li>
+ *                <li>多进程模式下</li>
+ *              </u>
  * @return
  */
 static ngx_int_t
@@ -896,7 +911,13 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
 
             continue;
         }
-        // 默认情况下都是把就绪事件入队处理 不是同步处理 因此不会执行到这
+        /*
+         * 什么时候会执行到这 两个情况
+         * <ul>
+         *   <li>1 单进程模式下 只有一个工作进程 拿到任务就同步处理</li>
+         *   <li>2 多进程模式下 当前worker进程没有抢到锁</li>
+         * </ul>
+		 */
         ev->handler(ev);
     }
 

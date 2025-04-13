@@ -16,7 +16,7 @@
 typedef struct ngx_listening_s  ngx_listening_t;
 
 /**
- * 套接字
+ * 要监听的端口
  */
 struct ngx_listening_s {
     /**
@@ -79,6 +79,7 @@ struct ngx_listening_s {
 #if (NGX_HAVE_INET6)
     unsigned            ipv6only:1;
 #endif
+	// mac系统默认是0 不支持端口复用
     unsigned            reuseport:1;
     unsigned            add_reuseport:1;
     unsigned            keepalive:2;

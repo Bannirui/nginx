@@ -41,7 +41,8 @@ struct ngx_event_s {
     /*
      * 标识当前事件是不是监听socket的accept事件
      * 为什么需要这个位域标识
-     * 它的作用是
+     * 它的作用是将来内核多路复用器响应了就绪事件区分出可读是连接事件还是可读事件
+     * 因为对于内核而言 连接也是可读只不过读缓冲区数据为空
      * <ul>
      *   <li>事件触发时快速判断是不是要调用accept系统调用来接收一个新的连接</li>
      *   <li>还是处理已有连接上的读写事件</li>
@@ -81,6 +82,8 @@ struct ngx_event_s {
 	/*
 	 * 逻辑上标识启用事件 管理nginx event的生命周期
 	 * 跟oneshot配合使用 对于oneshot一次性事件 从多路复用器拿到就绪后 就要把active置为0
+	 * 事件已经注册了 主要作用在连接事件上
+	 * 在master-worker的多进程
 	 */
     unsigned         active:1;
 
@@ -510,7 +513,11 @@ typedef struct {
     ngx_uint_t    use;
 
     ngx_flag_t    multi_accept;
-    // 多进程模式下是不是要开启竞争接收 防止多个进程监听在同一个端口收到同一个连接
+    /*
+     * 多进程模式下是不是要开启竞争接收 防止多个进程监听在同一个端口收到同一个连接
+     * 配置文件中 {accept_mutex on}是开始
+     * 如果没有指定开始accept锁 默认是关闭
+	 */
     ngx_flag_t    accept_mutex;
 
     ngx_msec_t    accept_mutex_delay;
@@ -541,6 +548,12 @@ extern ngx_uint_t             ngx_use_accept_mutex;
 extern ngx_uint_t             ngx_accept_events;
 extern ngx_uint_t             ngx_accept_mutex_held;
 extern ngx_msec_t             ngx_accept_mutex_delay;
+/*
+ * 控制当前进程不去accept新连接
+ * 为什么需要这个控制
+ * 在多进程模式下有多个worker进程 每个进程的负载可能不一样 这个计数器的目的是为了让当前进程停下对accept事件的处理 比如当前进程已经接收了太多我连接 连接数太多了 需要减少自己的连接
+ * 怎么减少自己的连接呢 因为在多进程模式下 连接事件的处理是互斥的 需要抢锁的 如果自己不去抢锁 放弃抢锁机会 不就变相等于放弃了accept连接
+ */
 extern ngx_int_t              ngx_accept_disabled;
 extern ngx_uint_t             ngx_use_exclusive_accept;
 
@@ -559,6 +572,17 @@ extern ngx_atomic_t  *ngx_stat_waiting;
 
 
 #define NGX_UPDATE_TIME         1
+/*
+ * 它表面上是为了将来网络事件先入队再处理
+ * 为什么什么要先入队呢 入队的目的是为了将来网络连接事件放在一起 将网络读写事件放在一起 本质是为了区分出网络连接事件
+ * 区分出网络连接事件的目的是为了好优先处理网络连接事件 提高网络事件的处理优先级
+ * 尽快处理网络连接事件的原因有
+ * <ul>
+ *   <li>1 网络连接事件的性质就是紧急的 需要尽快处理</li>
+ *   <li>2 连接事件轻 好处理</li>
+ *   <li>3 在master-worker多进程模式下 网络连接事件获取-处理逻辑是上锁同步的 先处理完网络连接事件可以迅速释放锁 减少持续占锁的时间</li>
+ * </ul>
+ */
 #define NGX_POST_EVENTS         2
 
 

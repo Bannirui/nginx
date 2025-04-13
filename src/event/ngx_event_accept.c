@@ -323,7 +323,13 @@ ngx_event_accept(ngx_event_t *ev)
 #endif
 }
 
-
+/*
+ * 什么时候需要抢锁 这个一个方案设计
+ * 目的 防止多进程下accept惊群
+ * cycle中listening存放一份监听端口 共享给所有worker进程 这种情况需要引入accept锁
+ * 每个worker进程启动后不要第一时间注册连接事件
+ * 而是等到进入事件循环 每一轮事件循环开始都
+ */
 ngx_int_t
 ngx_trylock_accept_mutex(ngx_cycle_t *cycle)
 {
@@ -342,6 +348,7 @@ ngx_trylock_accept_mutex(ngx_cycle_t *cycle)
         }
 
         ngx_accept_events = 0;
+		// 标识抢到了锁
         ngx_accept_mutex_held = 1;
 
         return NGX_OK;
@@ -354,7 +361,7 @@ ngx_trylock_accept_mutex(ngx_cycle_t *cycle)
         if (ngx_disable_accept_events(cycle, 0) == NGX_ERROR) {
             return NGX_ERROR;
         }
-
+		// 当前进程抢锁失败 放弃锁占用
         ngx_accept_mutex_held = 0;
     }
 
@@ -377,7 +384,7 @@ ngx_enable_accept_events(ngx_cycle_t *cycle)
         if (c == NULL || c->read->active) {
             continue;
         }
-
+		// 注册连接事件
         if (ngx_add_event(c->read, NGX_READ_EVENT, 0) == NGX_ERROR) {
             return NGX_ERROR;
         }

@@ -310,6 +310,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
         module = cycle->modules[i]->ctx;
         // 解析出核心模块需要的配置
         if (module->init_conf) {
+			// event模块属于核心模块 会回调到ngx_event.c的ngx_event_init_conf方法
             if (module->init_conf(cycle,
                                   cycle->conf_ctx[cycle->modules[i]->index])
                 == NGX_CONF_ERROR)
@@ -641,7 +642,22 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 #endif
         }
     }
-    // 要监听的端口开启tcp套接字的监听 等待连接过来
+    /*
+     * 要监听的端口开启tcp套接字的监听 等待连接过来
+     * 上面在回调核心模块event模块的ngx_event_init_conf方法时会尝试为所有worker进程都复制一份监听端口
+     * <ul>
+     *   <li>端口复用reuseport就把监听端口复制出来编上worker号 还是放在cycle的listening数组里面
+     *     <ul>
+     *       <li>假如要监听的端口是80 有4个worker进程</li>
+     *       <li>那么原来在listening数组的80端口给进程0用 啥也不用干</li>
+     *       <li>从1到3开始遍历作为进程编号 把80复制一份 打上编号</li>
+     *     </ul>
+     *   </li>
+     *   <li>默认不复用端口 那么cycle全局变量中listening数组中要监听的端口数量就是配置文件中指定的数理 就一份</li>
+     * </ul>
+     * master进程对要监听端口socket->bind->listen 相当于socket归master所有 master把socket对应的fd共享给worker
+     * 端口不复用下 为80端口创建socket监听在80端口上 把这个socket的fd放在listening数组将来共享给worker进程
+	 */
     if (ngx_open_listening_sockets(cycle) != NGX_OK) {
         goto failed;
     }

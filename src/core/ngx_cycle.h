@@ -66,6 +66,12 @@ struct ngx_cycle_s {
     time_t                    connections_reuse_time;
     /**
      * nginx监听的套接字端口
+     * 这个数组里面端口可能不止一份 什么叫一份 就是配置文件中指定的所有要监听的端口是一份
+     * <ul>
+     *   <li>系统支持端口重用reuseport就为每个worker进程都复制一份 编上进程索引号 将来worker进程人手一份</li>
+     *   <li>系统不支持端口重用 就在listening保存一份 所有worker进程共享</li>
+     * </ul>
+     * 但是不管几份 端口的socket->bind->listen都是在master进程中处理的
      */
     ngx_array_t               listening;
     ngx_array_t               paths;
@@ -103,11 +109,18 @@ struct ngx_cycle_s {
 
 typedef struct {
     ngx_flag_t                daemon;
+	/*
+	 * 标识nginx的进程模式
+	 * <ul>
+	 *   <li>0 单进程模式</li>
+	 *   <li>1 master-worker进程模式 默认是这种模式</li>
+	 * </ul>
+	 */
     ngx_flag_t                master;
     // 事件模块的时间精度 单位毫秒
     ngx_msec_t                timer_resolution;
     ngx_msec_t                shutdown_timeout;
-
+	// worker进程数量
     ngx_int_t                 worker_processes;
     ngx_int_t                 debug_points;
 
