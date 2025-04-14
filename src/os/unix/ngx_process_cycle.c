@@ -342,6 +342,7 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
 
 /*
  * master创建worker子进程
+ * 创建好子进程后 进程启动后的执行入口是ngx_worker_process_cycle方法 入参有两个cycle和i
  */
 static void
 ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
@@ -351,7 +352,11 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "start worker processes");
 
     for (i = 0; i < n; i++) {
-		// 创建子进程 子进程创建好后回调函数ngx_worker_process_cycle(cycle, i)
+		/*
+		 * 创建子进程 子进程创建好后回调函数ngx_worker_process_cycle(cycle, i)
+		 * cycle是nginx的全局变量 所有进程共享 主要要配置 master和worker都要用 所以在进程间作为参数传递
+		 * i是0-based的整数 n个worker进程编号[0...n-1]
+         */
         ngx_spawn_process(cycle, ngx_worker_process_cycle,
                           (void *) (intptr_t) i, "worker process", type);
 
@@ -706,7 +711,7 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
 }
 
 /*
- * 子进程运行逻辑
+ * worker进程运行逻辑
  * 子进程是由master进程创建的 创建好后会传两个参数
  * @param cycle nginx的全局变量
  * @param data 子进程的编号 0-based 假设有n个子进程 编号就是[0...n-1]
@@ -740,7 +745,7 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
         }
 
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "worker cycle");
-
+        // 工作进程的事件循环
         ngx_process_events_and_timers(cycle);
 
         if (ngx_terminate) {
