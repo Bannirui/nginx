@@ -341,7 +341,9 @@ ngx_trylock_accept_mutex(ngx_cycle_t *cycle)
         if (ngx_accept_mutex_held && ngx_accept_events == 0) {
             return NGX_OK;
         }
-
+        /*
+         * 抢锁成功的进程才有资格监听连接 找cycle中listening列表中没有监听的连接全部注册到自己的事件循环器上
+         */
         if (ngx_enable_accept_events(cycle) == NGX_ERROR) {
             ngx_shmtx_unlock(&ngx_accept_mutex);
             return NGX_ERROR;
@@ -358,6 +360,13 @@ ngx_trylock_accept_mutex(ngx_cycle_t *cycle)
                    "accept mutex lock failed: %ui", ngx_accept_mutex_held);
 
     if (ngx_accept_mutex_held) {
+        /*
+         * worker抢锁失败 要把自己注册过的监听的连接事件移除掉
+         * 这个地方移除连接事件监听会不会导致连接丢失
+         * <ul>
+         *   <li></li>
+         * </ul>
+         */
         if (ngx_disable_accept_events(cycle, 0) == NGX_ERROR) {
             return NGX_ERROR;
         }
@@ -368,7 +377,10 @@ ngx_trylock_accept_mutex(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*
+ * master-worker多进程下抢到锁的worker进程才会执行到这
+ * 到cycle的listening中拿没有被监听的socket注册到worker自己的事件循环器上
+ */
 ngx_int_t
 ngx_enable_accept_events(ngx_cycle_t *cycle)
 {
@@ -382,6 +394,7 @@ ngx_enable_accept_events(ngx_cycle_t *cycle)
         c = ls[i].connection;
 
         if (c == NULL || c->read->active) {
+            // 找到候选监听端口没被注册的
             continue;
         }
 		// 注册连接事件
@@ -393,7 +406,19 @@ ngx_enable_accept_events(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*
+ * 从内核多路复用器移除事件的监听
+ * <ul>
+ *   <li>复用器红黑树上有这个事件才会发生移除<ul>
+ *     为什么说明移除事件对真正的连接请求不会有影响 无非就是连接请求的接收比原来有一些滞后 但是这一点时间已经多发生的内核复用器系统调用对于accept惊群 都是小事
+ *     <li>虽然注册了连接事件 但是一直没有连接请求进来 那么直接移除 将来别的worker注册连接事件的监听 这是最简单的场景 肯定不会有问题</li>
+ *     <li>当前worker注册了连接事件 有连接请求进来 被accept过了 等于是已经发生过的事情 再把连接事件删除 将来别的worker进程注册 这也不会有问题</li>
+ *     <li>当前worker注册了连接事件 有连接请求进来 自己还没处理 等于现在情况是连接已经进来在backlog中 事件也被内核放到复用器的ready list上 此时系统调用从复用器红黑树上移除事件 内核会从红黑树和ready list上都移除这个事件 因为实际连接已经到了backlog中 将来别的worker进程注册连接事件后 内核会立马把这个事件放到它的ready list中等着那个worker进程处理</li>
+ *     <li></li>
+ *   </ul></li>
+ *   <li>复用器红黑树没有注册过这个事件 就等于是一次空调用 什么也不会发生</li>
+ * </ul>
+ */
 static ngx_int_t
 ngx_disable_accept_events(ngx_cycle_t *cycle, ngx_uint_t all)
 {
@@ -407,6 +432,14 @@ ngx_disable_accept_events(ngx_cycle_t *cycle, ngx_uint_t all)
         c = ls[i].connection;
 
         if (c == NULL || !c->read->active) {
+            /*
+             * 还没被注册过监听的不用管 假设候选端口有8个 其中有5个是被注册过的 那么当前进程注册监听的一定在这5个之中
+             * 所以不用讨论具体情况 直接把这5个都从自己的内核上删除
+             * <ul>
+             *   <li>自己内核注册过 自然会被移除</li>
+             *   <li>自己内核没有注册过 什么也不会发生</li>
+             * </ul>
+             */
             continue;
         }
 
@@ -422,7 +455,18 @@ ngx_disable_accept_events(ngx_cycle_t *cycle, ngx_uint_t all)
         }
 
 #endif
-
+        /*
+         * 从内核多路复用器移除事件的监听
+         * <ul>
+         *   <li>复用器红黑树上有这个事件才会发生移除<ul>
+         *     为什么说明移除事件对真正的连接请求不会有影响 无非就是连接请求的接收比原来有一些滞后 但是这一点时间已经多发生的内核复用器系统调用对于accept惊群 都是小事
+         *     <li>虽然注册了连接事件 但是一直没有连接请求进来 那么直接移除 将来别的worker注册连接事件的监听 这是最简单的场景 肯定不会有问题</li>
+         *     <li>当前worker注册了连接事件 有连接请求进来 被accept过了 等于是已经发生过的事情 再把连接事件删除 将来别的worker进程注册 这也不会有问题</li>
+         *     <li>当前worker注册了连接事件 有连接请求进来 自己还没处理 等于现在情况是连接已经进来在backlog中 事件也被内核放到复用器的ready list上 此时系统调用从复用器红黑树上移除事件 内核会从红黑树和ready list上都移除这个事件 因为实际连接已经到了backlog中 将来别的worker进程注册连接事件后 内核会立马把这个事件放到它的ready list中等着那个worker进程处理</li>
+         *   </ul></li>
+         *   <li>复用器红黑树没有注册过这个事件 就等于是一次空调用 什么也不会发生</li>
+         * </ul>
+         */
         if (ngx_del_event(c->read, NGX_READ_EVENT, NGX_DISABLE_EVENT)
             == NGX_ERROR)
         {

@@ -293,7 +293,10 @@ main(int argc, char *const *argv)
     if (ngx_preinit_modules() != NGX_OK) {
         return 1;
     }
-    // 真正进行cycle全局变量初始化
+    /*
+     * 真正进行cycle全局变量初始化 在这个函数里面会初始化好后配置文件中监听端口的socket资源并listen好 然后把socket资源信息保存在cycle的listening数组中
+     * fork子进程的逻辑在下面 到时候把cycle全局变量传递给worker进程 worker进程就可以共享监听端口了
+     */
     cycle = ngx_init_cycle(&init_cycle);
     if (cycle == NULL) {
         if (ngx_test_config) {

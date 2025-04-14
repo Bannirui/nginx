@@ -408,6 +408,11 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 
 /**
  * 服务端开启tcp的连接监听
+ * 这个函数的调用发生在nginx初始化过程中
+ * <ul>
+ *   <li>在单进程下就是进程初始化自己需要的资源</li>
+ *   <li>在多进程下 这个步骤发生在fork子进程之前 是master进程提前准备好cycle全局变量 将来共享给所有worker进程 为了防止惊群 socket由master初始化好并且listen 然后fd作为共享留给worker进程抢锁竞争 谁抢到谁负责监听 解决惊群</li>
+ * </ul>
  * 涉及到的系统调用
  * <ul>
  *   <li>socket</li>

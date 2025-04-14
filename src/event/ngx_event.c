@@ -288,12 +288,33 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
             ngx_accept_disabled--;
 
         } else {
+            /*
+             * 抢accept锁
+             * 这个方法有两个逻辑
+             * <ul>
+             *   <li>先是抢锁</li>
+             *   <li>要是抢锁成功就尝试把cycle的listening里面所有没被监听的fd注册到worker进程自己的事件循环器上</li>
+             *   <li>要是抢失败了 如果自己还已经注册过监听事件就要移除监听 然后把cycle的listening中socket被监听的标识移除 给其他worker进程去监听</li>
+             * </ul>
+             */
             if (ngx_trylock_accept_mutex(cycle) == NGX_ERROR) {
                 return;
             }
 
             if (ngx_accept_mutex_held) {
-				//
+				/*
+				 * 抢到了锁 说明上面已经经过一次尝试了 尝试什么 尝试去注册监听连接事件
+				 * <ul>
+				 *   <li>1 worker进程初始化后首次启动事件循环 第一次进来 worker进程刚抢到锁完成了listening端口的连接事件监听 那么等会去调用内核多路复用器拿就绪事件 可能有连接进来 也可能没有连接进来 要是有连接进来就要优先处理连接事件</li>
+				 *   <li>2 一轮一轮事件循环中的某一次 worker进程拿到了锁 那么这次情况就有点复杂<ul>
+				 *     <li>其他worker进程在之前事件循环中也没有抢到过锁 也就是其他worker都没监听过连接 那么到现在为止都是当前worker进程在监听连接 所以等会系统调用可能拿到新的连接就绪事件</li>
+				 *     <li>上一轮抢锁成功的不是自己 也就是说明自己这次从别的进程抢到了连接监听 等会可能有就绪连接事件进来</li>
+				 *   </ul></li>
+				 * </ul>
+				 * 所以等会系统调用去拿就绪连接事件 可能拿到就绪的连接事件
+				 * 因为连接事件的特殊性 需要及时处理 因此要跟普通的可读事件区分开
+				 * NGX_POST_EVENTS的作用就是用队列区分出连接事件和普通可读事件
+                 */
                 flags |= NGX_POST_EVENTS;
 
             } else {
@@ -553,7 +574,7 @@ ngx_handle_write_event(ngx_event_t *wev, size_t lowat)
  *   <li>可能是一份监听端口 也可能多份监听端口 创建好socket进行listen</li>
  * </ul>
  * 怎么为worker进程创建监听端口副本呢 假设总共有n个worker进程
- * 在ngx_cycle中回调到这之前 ngx_cycle已经从配置文件中解析了要监听哪些端口 假设80跟81 并切系统是支持端口复用的
+ * 在ngx_cycle中回调到这之前 ngx_cycle已经从配置文件中解析了要监听哪些端口 假设80跟81 并且系统是支持端口复用的
  * <ul>
  *   <li>总共有n个worker进程 人手一份 总共需要n份 现在只有一份</li>
  *   <li>n个进程编号依次是[0...n-1]</li>
@@ -1104,7 +1125,14 @@ ngx_event_process_init(ngx_cycle_t *cycle)
         }
 
 #endif
-		// worker进程注册对端口的连接事件监听注册到多路复用器上 这个时机在worker进程启动后就注册 上面有个判断是不是启用了accept锁 如果没有启动互斥锁 每个进程启动后就开始注册连接事件 这种方式可能会引起accept惊群
+        /*
+		 * worker进程注册对端口的连接事件监听注册到多路复用器上 这个时机在worker进程启动后就注册 上面有个判断是不是启用了accept锁 如果没有启动互斥锁 每个进程启动后就开始注册连接事件 这种方式可能会引起accept惊群
+		 * 那么执行到这的场景是
+		 * <ul>
+		 *   <li>单进程</li>
+		 *   <li>虽然是master-worker进程模式 但是没有启用accept锁</li>
+		 * </ul>
+         */
         if (ngx_add_event(rev, NGX_READ_EVENT, 0) == NGX_ERROR) {
             return NGX_ERROR;
         }

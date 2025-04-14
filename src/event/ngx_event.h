@@ -83,7 +83,8 @@ struct ngx_event_s {
 	 * 逻辑上标识启用事件 管理nginx event的生命周期
 	 * 跟oneshot配合使用 对于oneshot一次性事件 从多路复用器拿到就绪后 就要把active置为0
 	 * 事件已经注册了 主要作用在连接事件上
-	 * 在master-worker的多进程
+	 * 在master-worker的多进程下 所有worker进程共享cycle中的listening 抢锁成功后注册事件循环器 并把这个字段打上标识
+	 * 换言之 对于accept连接事件 也是read连接 worker进程看这个字段是0的就是没被别的worker进程注册监听过的
 	 */
     unsigned         active:1;
 
@@ -574,7 +575,7 @@ extern ngx_atomic_t  *ngx_stat_waiting;
 #define NGX_UPDATE_TIME         1
 /*
  * 它表面上是为了将来网络事件先入队再处理
- * 为什么什么要先入队呢 入队的目的是为了将来网络连接事件放在一起 将网络读写事件放在一起 本质是为了区分出网络连接事件
+ * 为什么什么要先入队呢 入队的目的是为了网络连接事件放在一起 将网络读写事件放在一起 本质是为了区分出网络连接事件
  * 区分出网络连接事件的目的是为了好优先处理网络连接事件 提高网络事件的处理优先级
  * 尽快处理网络连接事件的原因有
  * <ul>

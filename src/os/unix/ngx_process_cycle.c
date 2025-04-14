@@ -280,6 +280,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
 /**
  * nginx单进程模式
+ * 会轮询模块回调模块的init_process方法 其中event模块的ngx_event_process_init方法会被执行 这个方法就涉及到事件循环启动前注册监听连接或者事件循环中注册监听连接
  */
 void
 ngx_single_process_cycle(ngx_cycle_t *cycle)
@@ -295,6 +296,7 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
         if (cycle->modules[i]->init_process) {
             /*
              * 这个地方会回调到ngx_event的init_process函数 为事件模块的循环事件做初始化工作 下面再启动事件循环
+             * 对应的方法在ngx_event.c中的ngx_event_process_init
              */
             if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {
                 /* fatal */
@@ -729,7 +731,7 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 
     ngx_setproctitle("worker process");
     /*
-     * 事件循环
+     * worker进程的事件循环
      * <ul>
      *   <li>接收请求</li>
      *   <li>处理任务</li>
@@ -920,7 +922,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
     // 初始化完了工作进程 回调模块
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->init_process) {
-			// 这个地方会调用到ngx_event_process_init函数
+			// 这个地方会调用到ngx_event.c事件模块的ngx_event_process_init函数
             if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {
                 /* fatal */
                 exit(2);

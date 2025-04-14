@@ -35,7 +35,8 @@ static ngx_connection_t  dumb;
 /* STUB */
 
 /**
- *
+ * cycle是nginx的全局变量 为什么需要这个东西
+ * 在多进程模式下 master进程要将cycle传递给worker进程
  * @return 全局变量 nginx生命周期的变量都在这
  */
 ngx_cycle_t *

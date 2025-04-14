@@ -69,7 +69,7 @@ struct ngx_cycle_s {
      * 这个数组里面端口可能不止一份 什么叫一份 就是配置文件中指定的所有要监听的端口是一份
      * <ul>
      *   <li>系统支持端口重用reuseport就为每个worker进程都复制一份 编上进程索引号 将来worker进程人手一份</li>
-     *   <li>系统不支持端口重用 就在listening保存一份 所有worker进程共享</li>
+     *   <li>系统不支持端口重用 就在listening保存一份 所有worker进程共享 worker进程抢抢锁竞争决定谁监听socket插口连接</li>
      * </ul>
      * 但是不管几份 端口的socket->bind->listen都是在master进程中处理的
      */
